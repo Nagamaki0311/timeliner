@@ -106,4 +106,32 @@
 ### 影響
 - 4形式（端末内Timeline Android/iOS、Takeout Semantic Location History、Takeout Records）それぞれのパース分岐ロジックの正しさは、コードレビューによる確認と手動でのフィクスチャ照合に留まり、自動テストによる継続的な保証がない状態が残る（D-002項目2の「実データ未検証」とは別の、テスト自動化に関する既知のリスクとして追加で記録する）。
 - 将来、実機/エミュレータが利用可能になった場合はandroidTest（instrumented test）としてこの部分を検証することが望ましい。Robolectric導入の是非を再検討する場合は、その時点で改めてユーザー確認を取ること。
+- 本Dは後継のD-004により対応方針が更新された（このDの背景・経緯自体は削除しない）。
+
+---
+
+## D-004: T-003レビュー指摘への対応方針（Gson JsonReaderへの切替、null耐性、Records.jsonの位置づけ）
+
+- 日付: 2026-08-19
+- 状態: 採用
+
+### 背景
+- ReviewerによるT-003の敵対的レビューで3件の問題が確認された。(1) High/CONFIRMED: `parseZip`がzipエントリ順（時系列と一致しない）で点を単純追記するのみで、時刻ソート・複数データ源の統合方針が無い。典型的なTakeoutエクスポートは`Records.json`（生GPS）と`Semantic Location History/`（Googleが導出した代表点）を同一zipに同梱するため、由来の異なる点が無区別に混在しうる。(2) High/CONFIRMED: `next*()`呼び出し前に`JsonToken.NULL`を判定する処理が一切なく、1フィールドの明示的`null`が`IllegalStateException`としてファイル全体（zipなら以降の全エントリも含む）のパース失敗に伝播する。D-002が明記した「セグメント単位の部分失敗許容」という設計方針に反する。(3) Medium/CONFIRMED: D-002項目7は「Records.json(生GPS)はv1スコープ外」と決定していたが、Manager（このセッション）がT-003のタスク指示を書く際に形式D（Records.json）を対象に含めてしまい、実装・テストも完了済みという状態になっていた。docs/tasks.mdのバックログには矛盾して「未着手」の行が残っていた。
+- 加えてD-003で「解消不能」としていた自動テストの欠如について、Reviewerが独立に検証し、`android.util.JsonReader`と`com.google.gson.stream.JsonReader`が呼び出しているAPI（メソッド・JsonToken列挙値）が完全に一致すること（前者は後者を直接フォークしたクラス）、Gson本体に実行時の追加依存が無いこと（単一jar約290KB）を確認した。import差し替えのみで本番と同一コードをプレーンなJVM単体テストから実行できる。
+
+### 決定
+1. **Records.json（形式D）はv1スコープに含める**（D-002項目7を上書きする）。既に実装・単体テスト済みであり、動作するコードを「決定と矛盾するから」という理由だけで削除しない。ただし、同一zip内に`Semantic Location History/`が存在する場合、`Records.json`は**インポート対象から除外する**（後述の決定4）。`Records.json`単体のエクスポート（Semantic Location Historyを含まないTakeout）を読み込む場合にのみ形式Dとして処理する。docs/tasks.mdのバックログから該当行を削除する。
+2. `TimelineJsonParser.kt`のimportを`android.util.JsonReader`/`android.util.JsonToken`から`com.google.gson.stream.JsonReader`/`com.google.gson.stream.JsonToken`へ切り替える。`app/build.gradle.kts`に`com.google.gson:gson`（version catalog経由）を追加する。呼び出し箇所（メソッド名・シグネチャ）は変更不要。
+3. 各フィールド読み取り箇所で`reader.peek() == JsonToken.NULL`を判定し`nextNull()`でスキップしてnull値として扱う共通ヘルパー（例: `readNullableString`/`readNullableLong`/`readNullableDouble`）を導入する。加えて、各セグメント/レコード単位の処理（`parseDeviceTimelineSegment`/`parsePlaceVisit`/`parseActivitySegment`/`parseRecordsArray`の要素ループ内側等）を`try/catch`で囲み、想定外の型不一致等が発生した要素はスキップしてログに残し、パース全体は継続する。
+4. `parseZip`がzip内のエントリ種別（`Semantic Location History/`系か`Records.json`か）を認識し、前者が1件以上存在する場合は後者を読み飛ばす。加えて、`RawTrackBuilder.build()`（または`parseZip`の最終段）で全点を時刻昇順に安定ソートする（zip格納順・複数月ファイルの結合順が時系列と一致しない問題への対処。単一形式・単一エントリの場合も安全側として常に適用する）。
+5. Gson導入後、`TimelineJsonParserTest.kt`に形式A〜D各1件の合成JSONを実際に`parseJson`/`parseZip`へ通す統合テストを追加し、D-003が「今回追加できていない」としていたコアパースロジックの自動検証を行う。あわせて本Dの決定3（null耐性）・決定4（ソート・Records.json除外）を検証するテストケースも追加する。
+
+### 理由
+- Records.jsonを削除するより「同一zip内でSemantic Location Historyと重複する場合のみ除外する」方が、動くコードを活かしつつ指摘1（データ源混在）の実害を解消できる最小の変更である。Records.json単体エクスポートというありうる入力（ユーザーがTakeoutで生GPSのみを選択した場合）を切り捨てない。
+- Gsonへの切替はAGENTS.mdの判定ラダー3（既存の成熟した外部ライブラリで足りるか）に合致し、D-002が避けたかった「ドキュメント全体をメモリに載せる高水準シリアライズライブラリ（Kotlinx Serialization/Moshi）」とは性質が異なる、同一設計思想のストリーミングAPIへの単純な実装差し替えである。
+- null耐性は要件で明示された「データ損失を防ぐエラーハンドリング」（AGENTS.md原則8）そのものであり、実データでの信頼性に直結するため必須修正とする。
+
+### 影響
+- D-003が「解消不能」としていた自動テストの欠如は、本D-004の実施後に解消される想定。D-003の記述自体は経緯の記録として削除しない。
+- 以降のdeveloperタスクは、`TimelineJsonParser.kt`のnull安全化・zip内ソースの優先順位付け・ソートを本Dの決定に従って実装する。
 
