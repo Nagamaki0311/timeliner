@@ -17,6 +17,24 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-19 T-004b T-004レビュー指摘の修正（TrackCleanerの実距離判定をHaversineへ）
+
+### 実施内容
+- D-005の決定に従い、以下を修正した（対象: `app/src/main/java/com/nagamaki0311/timeliner/process/`）。
+  - `Mercator.kt`: 2点の緯度経度（度単位）から大圏距離をHaversine公式で計算する`haversineDistanceMeters`を追加（地球平均半径6371000mを使用）。既存の`distanceMeters`（メルカトル投影平面上のユークリッド距離）には「投影空間内の距離であり実世界の距離ではない、[Simplifier]の幾何学的な簡略化にのみ使うこと」を明示するコメントを追加した。ファイル冒頭のコメントにあった、実際にはdocs/tasks.mdに存在しない文言を引用符付きで「docs/tasks.md T-004: 「Webメルカトル投影後のメートル空間で実行する」」と記載していた誤記（投影方式の選択はDeveloper自身の設計判断）を、出典表記を外した記述へ修正した（レビュー指摘のLowで名指しされたファイルはSimplifier.ktだったが、grepで実際の該当箇所を特定した結果この文言はMercator.kt側にのみ存在したため、根本原因の実位置であるMercator.ktを修正した）。
+  - `TrackCleaner.kt`: `removeSpeedSpikes`が内部で呼ぶ`speedMetersPerSecond`、および`suppressStationaryJitter`が使う距離計算を、いずれも`Mercator.distanceMeters`から`Mercator.haversineDistanceMeters`へ置き換えた。
+  - `Simplifier.kt`: Douglas-Peuckerの垂線距離判定は幾何学的な簡略化が目的（地図上の見た目のズレを測る指標であり、MapLibreの描画自体もWebメルカトルベース）のため変更不要と判断し、変更していない。
+- テスト:
+  - `MercatorTest.kt`に`haversineDistanceMeters`用のテストを5件追加（同一点0、対称性、赤道上1度の既知値[地球平均半径ベースで約111.19km]、東京駅↔新宿駅の既知の実距離[約6083m、許容誤差50m]、赤道以外では`distanceMeters`[投影距離]より`haversineDistanceMeters`[実距離]の方が小さいことの確認）。
+  - `TrackCleanerTest.kt`の既存テスト（速度スパイク除去2件・停留ジッタ抑制3件）は、いずれも距離判定の閾値に対して十分な余裕（最大速度閾値300km/hに対し実測30〜40km/h程度、距離閾値15mに対し実測3〜5m or 1.1km程度）を持たせた設計だったため、Mercator投影距離からHaversineへの置き換え後も期待値の変更なしにそのまま成立することを確認した。あわせて「高緯度でも判定基準が一定であること」を検証する新規テスト`suppressStationaryJitter_thresholdIsConsistentAtHighLatitude`を1件追加（赤道付近と北緯60度で実距離がほぼ同じ[約11.1m]になるよう経度差を`1/cos(60°)`倍に調整した2点を用意し、どちらも同じ停留ジッタ閾値[15m]で抑制されることを確認。旧Mercator投影距離のままだと北緯60度側の経度差が約2倍に過大評価され抑制されなくなるため、この修正の効果を検証するテストになっている）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（`MercatorTest`12件・`TrackCleanerTest`13件を含め全件パス）。
+- `./gradlew assembleDebug`が成功。
+
+### 次回開始位置
+- T-005（永続化とインポート導線）に着手する。
+
 ## 2026-08-19 T-004 GPSノイズ除去・ルート簡略化（+T-003b再検証指摘2件の修正）
 
 ### 実施内容

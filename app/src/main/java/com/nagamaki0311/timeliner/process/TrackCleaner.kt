@@ -154,7 +154,7 @@ object TrackCleaner {
         var lastTime = time[0]
         for (i in 1 until size) {
             val elapsed = time[i] - lastTime
-            val distance = Mercator.distanceMeters(lastLat, lastLon, lat[i], lon[i])
+            val distance = Mercator.haversineDistanceMeters(lastLat, lastLon, lat[i], lon[i])
             if (distance < distanceMeters && elapsed < timeMillis) {
                 continue
             }
@@ -185,7 +185,7 @@ object TrackCleaner {
     private fun speedMetersPerSecond(lat1: Double, lon1: Double, t1: Long, lat2: Double, lon2: Double, t2: Long): Double {
         val elapsedMillis = t2 - t1
         if (elapsedMillis <= 0) return Double.MAX_VALUE
-        val distanceMeters = Mercator.distanceMeters(lat1, lon1, lat2, lon2)
+        val distanceMeters = Mercator.haversineDistanceMeters(lat1, lon1, lat2, lon2)
         return distanceMeters / (elapsedMillis / 1000.0)
     }
 }

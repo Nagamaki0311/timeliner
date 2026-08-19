@@ -160,6 +160,34 @@ class TrackCleanerTest {
         assertEquals(2, result.size)
     }
 
+    @Test
+    fun suppressStationaryJitter_thresholdIsConsistentAtHighLatitude() {
+        // 東西方向に「実距離がほぼ同じ(約11m)」だけ動いた点を、赤道付近と北緯60度で用意する。
+        // 北緯60度では同じ実距離でも経度差は約2倍(1/cos(60°))必要になる。Haversine距離であれば、
+        // 経度差が違っても実距離が同じなら停留ジッタとして抑制されるかどうかの判定が緯度に依らず一定になる
+        // （メルカトル投影距離のままだと高緯度側の経度差が過大評価され、判定基準がずれてしまう）。
+        val lowLatitudePoints = series(
+            listOf(
+                Triple(0.0, 139.0, 0L),
+                Triple(0.0, 139.0001, 10_000L) // 実距離 約11.1m
+            )
+        )
+        val highLatitudePoints = series(
+            listOf(
+                Triple(60.0, 139.0, 0L),
+                Triple(60.0, 139.0002, 10_000L) // 経度差は2倍だが実距離は約11.1mとほぼ同じ
+            )
+        )
+
+        val lowLatitudeResult =
+            TrackCleaner.suppressStationaryJitter(lowLatitudePoints, distanceMeters = 15.0, timeMillis = 60_000L)
+        val highLatitudeResult =
+            TrackCleaner.suppressStationaryJitter(highLatitudePoints, distanceMeters = 15.0, timeMillis = 60_000L)
+
+        assertEquals(1, lowLatitudeResult.size)
+        assertEquals(1, highLatitudeResult.size)
+    }
+
     // ---- computeSegmentStartIndices ----
 
     @Test

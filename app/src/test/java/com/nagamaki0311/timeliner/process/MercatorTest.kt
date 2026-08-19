@@ -49,4 +49,39 @@ class MercatorTest {
         assertTrue(ySouth < yEquator)
         assertTrue(yEquator < yNorth)
     }
+
+    @Test
+    fun haversineDistanceMeters_samePoint_isZero() {
+        assertEquals(0.0, Mercator.haversineDistanceMeters(35.0, 139.0, 35.0, 139.0), 1e-9)
+    }
+
+    @Test
+    fun haversineDistanceMeters_isSymmetric() {
+        val forward = Mercator.haversineDistanceMeters(35.0, 139.0, 36.0, 140.0)
+        val backward = Mercator.haversineDistanceMeters(36.0, 140.0, 35.0, 139.0)
+        assertEquals(forward, backward, 1e-9)
+    }
+
+    @Test
+    fun haversineDistanceMeters_oneDegreeLongitudeAtEquator_matchesKnownRealWorldDistance() {
+        // 赤道上、地球平均半径(6371km)の球面近似での経度1度あたりの距離は約111.19km。
+        val distance = Mercator.haversineDistanceMeters(0.0, 0.0, 0.0, 1.0)
+        assertEquals(111194.93, distance, 5.0)
+    }
+
+    @Test
+    fun haversineDistanceMeters_tokyoStationToShinjukuStation_matchesKnownRealWorldDistance() {
+        // 東京駅↔新宿駅（実距離は約6083m）。赤道以外での精度確認。
+        val distance = Mercator.haversineDistanceMeters(35.681236, 139.767125, 35.689607, 139.700571)
+        assertEquals(6083.0, distance, 50.0)
+    }
+
+    @Test
+    fun haversineDistanceMeters_isSmallerThanProjectedDistance_awayFromEquator() {
+        // 赤道以外ではメルカトル投影距離(distanceMeters)は実距離より過大に出る。
+        // 東京駅↔新宿駅は緯度約35.68度のため、Haversine（実距離）の方が小さいはず。
+        val haversine = Mercator.haversineDistanceMeters(35.681236, 139.767125, 35.689607, 139.700571)
+        val projected = Mercator.distanceMeters(35.681236, 139.767125, 35.689607, 139.700571)
+        assertTrue(haversine < projected)
+    }
 }
