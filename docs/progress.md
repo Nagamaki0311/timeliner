@@ -17,6 +17,27 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-19 T-003b T-003レビュー指摘の修正（null耐性・複数データ源の統合・Gson化）
+
+### 実施内容
+- D-004の決定に従い`TimelineJsonParser.kt`を修正した（対象: `app/src/main/java/com/nagamaki0311/timeliner/data/parser/TimelineJsonParser.kt`）。
+  - Gson化: importを`android.util.JsonReader`/`android.util.JsonToken`から`com.google.gson.stream.JsonReader`/`com.google.gson.stream.JsonToken`へ切替。`gradle/libs.versions.toml`・`app/build.gradle.kts`に`com.google.code.gson:gson:2.14.0`（Maven Central `maven-metadata.xml`で確認した最新安定版。groupIdは`com.google.code.gson`であり`com.google.gson`ではないことに注意）を`implementation`として追加した。
+  - null耐性: `readNullableString`/`readNullableLong`/`readNullableDouble`（`reader.peek() == JsonToken.NULL`を判定し`nextNull()`でスキップ）を追加し、全フィールド読み取り箇所を置き換えた。既存の`readFlexibleDouble`（string/number両対応のdouble読み取り）は`readNullableDouble`に統合した。
+  - 要素単位のスキップ耐性: `parseArrayElementSafely`ヘルパーを追加。配列の各要素を`com.google.gson.JsonParser.parseReader(reader)`で一度`JsonElement`ツリーとして丸ごと消費し、その`toString()`を新しい`JsonReader(StringReader(...))`で読み直して解釈する。想定外の型不一致等の例外は解釈側だけで発生するため、元の`reader`（配列全体を走査する側）の読み取り位置は常に正しい状態を保ち、その要素だけをスキップして後続要素の処理を継続できる。これを`parseDeviceTimelineArray`（形式A/B）・`parseTimelineObjectsArray`（形式C、`parseTimelineObject`に分離）・`parseRecordsArray`（形式D、`parseRecord`に分離）の3箇所に適用した（D-004決定3で名指しされた4関数すべてを網羅）。単純に呼び出しを`try/catch`で囲むだけでは、例外発生時に`beginObject()`済みで`endObject()`未実行の状態が残り後続要素の走査位置がずれるため、この設計を採用した。
+  - zip内優先順位付け: `isTargetZipEntry`を`isSemanticLocationHistoryEntry`/`isRecordsJsonEntry`に分割し、`shouldParseZipEntry`で「`Semantic Location History/`が1件でも存在する場合は`Records.json`を除外」を判定する。`ZipInputStream`は巻き戻せず、除外可否の判定には全エントリを事前に把握する必要があるため、`parseZip`のシグネチャを`InputStream`から`() -> InputStream`（同一内容を指す新しいストリームを返す関数）に変更し、1回目のパスでエントリ種別のみをスキャン（内容は読み捨て、メモリに保持しない）、2回目のパスで実際にパースする2パス方式にした。現時点で`parseZip`の呼び出し元はテストのみ（インポート導線はT-005で実装予定）のため、シグネチャ変更の影響範囲はない。将来のSAF/Uri経由の実装（`ContentResolver.openInputStream(uri)`を複数回呼ぶ）とも自然に整合する設計とした。
+  - 時刻ソート: `RawTrackBuilder.build()`で全点を時刻昇順に安定ソートしてから`RawTrack`を返すよう変更（インデックス配列を`sortedBy`（Kotlin内部はマージソート相当で安定）でソートし、3つのプリミティブ配列を並べ替える）。単一エントリの場合も含め常に適用する。
+  - Nit対応: `parseVisit`の`"placeLocation"`キー照合を`ignoreCase = true`から`==`（大文字小文字を区別）に戻した（`placeId`/`placeID`のみ文書化された差異のため）。
+- `TimelineJsonParserTest.kt`にD-004決定5に沿った統合テストを追加した。Gson化によりJVM単体テストから`parseJson`/`parseZip`を実際に実行できるようになったため、形式A〜Dそれぞれの合成JSONを実際にパースして点数・座標・時刻・セグメント種別を検証するテストを新設（4件）。加えてnull耐性（`placeId`/`activityType`が`null`でも要素全体は正常にパースされること、Records.jsonの必須フィールド`latitudeE7`が`null`の要素だけがスキップされ他は正常にパースされること、3件）、zip内優先順位付け（`Records.json`と`Semantic Location History`が同一zipにある場合は前者が除外されること、`Records.json`単体では読み込まれること、2件）、時刻ソート（zip格納順が時系列と逆でも最終的な点列が時刻昇順になること、1件）を追加した。`isTargetZipEntry`の既存7件はそのまま維持した（テスト総数17件）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（`TimelineJsonParserTest`17件すべてパス、`CoordinateParsingTest`9件・`TimestampParsingTest`7件も引き続きパス）。
+- `./gradlew assembleDebug`が成功した（gson追加後もAPKビルドに問題なし）。
+- Reviewerが指摘した5件（High×2・Medium×1・Gson化・Nit×1）すべてに対応した。Medium（Records.jsonの位置づけのドキュメント不整合）はD-004で解決済みのためコード修正のみで完了。
+
+### 次回開始位置
+- T-003・T-003bを完了とし、T-004（GPSノイズ除去・ルート簡略化）へ進む。`RawTrack`（プリミティブ配列、時刻昇順ソート済み）を入力・出力とするパイプライン関数群を想定。
+- 懸念点（将来的な見直し候補）: `parseZip`の2パス方式は、1パス目でzip全体のエントリ内容を読み捨てるため、非常に大きなzip（数GB級）ではCPU時間が単純に倍近くなる。T-005でSAF経由の実インポート導線を実装する際、実際のファイルサイズ感（Takeout標準エクスポートの典型サイズ）を踏まえて許容範囲か確認すること。
+
 ## 2026-08-19 T-003 タイムラインJSONパース（4形式対応）
 
 ### 実施内容

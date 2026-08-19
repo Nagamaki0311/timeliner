@@ -1,26 +1,32 @@
 package com.nagamaki0311.timeliner.data.parser
 
-import android.util.JsonReader
-import android.util.JsonToken
+import com.google.gson.JsonParser
+import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
 import com.nagamaki0311.timeliner.model.RawTrack
 import com.nagamaki0311.timeliner.model.TimelineSegment
 import com.nagamaki0311.timeliner.model.TimelineSegmentType
 import java.io.InputStream
 import java.io.InputStreamReader
+import java.io.StringReader
 import java.util.zip.ZipInputStream
 
 /**
- * タイムラインJSON（4形式）を[android.util.JsonReader]によるストリーミング走査で
+ * タイムラインJSON（4形式）を[com.google.gson.stream.JsonReader]によるストリーミング走査で
  * 共通中間モデル[RawTrack]へ正規化するパーサ。
  *
  * 形式判別: ルートを1トークンだけ先読みし、`BEGIN_ARRAY`なら端末内Timeline(iOS)、
  * `BEGIN_OBJECT`なら最初に現れる既知キー（`semanticSegments`/`timelineObjects`/`locations`）で判定する。
  * 未知キーは`skipValue()`で読み飛ばし、Googleのスキーマ変更への耐性を持たせる。
  *
- * 対応不可: `android.util.JsonReader`はAndroid API依存のため、Robolectric等を追加しない限り
- * プレーンなJVM単体テスト（`app/src/test`）からは実行できない（`Method ... not mocked`で例外になる。
- * 実機/Android実行環境が必要）。純Kotlinで完結する[parseCoordinateString]・[parseE7]・
- * [parseTimestampMillis]・[isTargetZipEntry]のみJVM単体テストで検証する。
+ * Gson `JsonReader`は`android.util.JsonReader`をフォークしたクラスでAPIが完全一致し、
+ * かつAndroid API非依存のためプレーンなJVM単体テスト（`app/src/test`）から本番と同一コードパスを
+ * 実行できる（docs/decisions.md D-003・D-004参照）。
+ *
+ * null耐性: 各フィールド読み取りは[readNullableString]/[readNullableLong]/[readNullableDouble]で
+ * `JsonToken.NULL`を判定してから読む。加えて[parseArrayElementSafely]で配列要素単位を
+ * JSONツリーとして一度安全に消費してから解釈するため、想定外の型不一致等で例外が発生しても
+ * 元の`reader`の読み取り位置は壊れず、その要素だけをスキップしてファイル全体のパースを継続できる。
  */
 object TimelineJsonParser {
 
@@ -36,33 +42,118 @@ object TimelineJsonParser {
     /**
      * Takeout配布のzipを走査し、`Semantic Location History`配下の`.json`と`Records.json`をパースする。
      * 複数エントリが見つかった場合はすべて同一の[RawTrack]へ統合する。
+     *
+     * 同一zip内に`Semantic Location History/`配下のエントリが1件以上存在する場合、`Records.json`は
+     * 由来の異なる点の混在を避けるためインポート対象から除外する（`Records.json`単体のエクスポートの
+     * 場合のみ読み込む）。判定にはzip全体のエントリ種別を先に把握する必要があるため、
+     * [openInput]（同一内容を指す新しい[InputStream]を返す関数）を2回呼び出して2パスで走査する
+     * （`ZipInputStream`は巻き戻せないため。zip内容全体をメモリへ読み込むことは避ける）。
      */
-    fun parseZip(input: InputStream): RawTrack {
+    fun parseZip(openInput: () -> InputStream): RawTrack {
         val builder = RawTrackBuilder()
-        ZipInputStream(input).use { zip ->
-            var entry = zip.nextEntry
-            while (entry != null) {
-                if (!entry.isDirectory && isTargetZipEntry(entry.name)) {
-                    // JsonReaderをcloseするとzip全体のストリームが閉じてしまうため、意図的にcloseしない。
-                    val reader = JsonReader(InputStreamReader(zip, Charsets.UTF_8))
-                    parseRoot(reader, builder)
+        val hasSemanticEntry = scanForSemanticLocationHistoryEntry(openInput)
+        openInput().use { input ->
+            ZipInputStream(input).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && shouldParseZipEntry(entry.name, hasSemanticEntry)) {
+                        // JsonReaderをcloseするとzip全体のストリームが閉じてしまうため、意図的にcloseしない。
+                        val reader = JsonReader(InputStreamReader(zip, Charsets.UTF_8))
+                        parseRoot(reader, builder)
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
                 }
-                zip.closeEntry()
-                entry = zip.nextEntry
             }
         }
         return builder.build()
+    }
+
+    private fun scanForSemanticLocationHistoryEntry(openInput: () -> InputStream): Boolean {
+        openInput().use { input ->
+            ZipInputStream(input).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && isSemanticLocationHistoryEntry(entry.name)) {
+                        return true
+                    }
+                    zip.closeEntry()
+                    entry = zip.nextEntry
+                }
+            }
+        }
+        return false
     }
 
     /**
      * zipエントリのパスが対応対象（Semantic Location History配下のjson、またはRecords.json）かどうかを判定する。
      * 純Kotlinのみで完結するためJVM単体テストで検証できる。
      */
-    internal fun isTargetZipEntry(entryName: String): Boolean {
+    internal fun isTargetZipEntry(entryName: String): Boolean =
+        isSemanticLocationHistoryEntry(entryName) || isRecordsJsonEntry(entryName)
+
+    private fun isSemanticLocationHistoryEntry(entryName: String): Boolean {
         val normalized = entryName.replace('\\', '/')
-        if (!normalized.endsWith(".json", ignoreCase = true)) return false
-        return normalized.contains("Semantic Location History/", ignoreCase = true) ||
+        return normalized.endsWith(".json", ignoreCase = true) &&
+            normalized.contains("Semantic Location History/", ignoreCase = true)
+    }
+
+    private fun isRecordsJsonEntry(entryName: String): Boolean {
+        val normalized = entryName.replace('\\', '/')
+        return normalized.endsWith(".json", ignoreCase = true) &&
             normalized.substringAfterLast('/').equals("Records.json", ignoreCase = true)
+    }
+
+    /** `Records.json`は、同一zip内に`Semantic Location History`が存在する場合は除外する。 */
+    private fun shouldParseZipEntry(entryName: String, hasSemanticEntry: Boolean): Boolean =
+        isSemanticLocationHistoryEntry(entryName) || (!hasSemanticEntry && isRecordsJsonEntry(entryName))
+
+    // ---- null耐性ヘルパー ----
+
+    private fun readNullableString(reader: JsonReader): String? {
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return null
+        }
+        return reader.nextString()
+    }
+
+    private fun readNullableLong(reader: JsonReader): Long? {
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return null
+        }
+        return reader.nextLong()
+    }
+
+    /** 数値・文字列のどちらでも表現されうるdouble値（`distance`/`distanceMeters`）をnull耐性込みで読む。 */
+    private fun readNullableDouble(reader: JsonReader): Double? {
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return null
+        }
+        return when (reader.peek()) {
+            JsonToken.STRING -> reader.nextString().toDouble()
+            else -> reader.nextDouble()
+        }
+    }
+
+    /**
+     * 配列内の1要素をJSONツリー（[com.google.gson.JsonElement]）として丸ごと消費してから、
+     * その文字列表現を新しい[JsonReader]で読み直して[parseElement]に渡す。
+     * 想定外の型不一致・欠損等で[parseElement]が例外を送出しても、元の`reader`はこの要素を
+     * 正しく消費し終えた状態のままなので、後続要素の走査に影響しない
+     * （`reader`のスキャン位置は壊さず、その要素だけをスキップできる）。
+     */
+    private fun parseArrayElementSafely(reader: JsonReader, parseElement: (JsonReader) -> Unit) {
+        val element = JsonParser.parseReader(reader)
+        try {
+            JsonReader(StringReader(element.toString())).use { elementReader ->
+                parseElement(elementReader)
+            }
+        } catch (e: RuntimeException) {
+            // 想定外の型不一致・欠損等が発生した要素はスキップし、他の要素の処理は継続する。
+        }
     }
 
     // ---- ルート判別 ----
@@ -107,7 +198,9 @@ object TimelineJsonParser {
     private fun parseDeviceTimelineArray(reader: JsonReader, builder: RawTrackBuilder) {
         reader.beginArray()
         while (reader.hasNext()) {
-            parseDeviceTimelineSegment(reader, builder)
+            parseArrayElementSafely(reader) { elementReader ->
+                parseDeviceTimelineSegment(elementReader, builder)
+            }
         }
         reader.endArray()
     }
@@ -121,8 +214,8 @@ object TimelineJsonParser {
         var hasPath = false
         while (reader.hasNext()) {
             when (reader.nextName()) {
-                "startTime" -> startTimeMillis = parseTimestampMillis(reader.nextString())
-                "endTime" -> endTimeMillis = parseTimestampMillis(reader.nextString())
+                "startTime" -> startTimeMillis = readNullableString(reader)?.let { parseTimestampMillis(it) }
+                "endTime" -> endTimeMillis = readNullableString(reader)?.let { parseTimestampMillis(it) }
                 "visit" -> visit = parseVisit(reader)
                 "activity" -> activity = parseActivity(reader)
                 "timelinePath" -> {
@@ -196,8 +289,8 @@ object TimelineJsonParser {
                     val key = reader.nextName()
                     when {
                         // Androidは"placeId"、iOSは"placeID"。大文字小文字差を吸収する。
-                        key.equals("placeId", ignoreCase = true) -> placeId = reader.nextString()
-                        key.equals("placeLocation", ignoreCase = true) -> location = parseLatLngField(reader)
+                        key.equals("placeId", ignoreCase = true) -> placeId = readNullableString(reader)
+                        key == "placeLocation" -> location = parseLatLngField(reader)
                         else -> reader.skipValue()
                     }
                 }
@@ -225,14 +318,14 @@ object TimelineJsonParser {
         var end: Pair<Double, Double>? = null
         while (reader.hasNext()) {
             when (reader.nextName()) {
-                "distanceMeters" -> distanceMeters = readFlexibleDouble(reader)
+                "distanceMeters" -> distanceMeters = readNullableDouble(reader)
                 "start" -> start = parseLatLngField(reader)
                 "end" -> end = parseLatLngField(reader)
                 "topCandidate" -> {
                     reader.beginObject()
                     while (reader.hasNext()) {
                         if (reader.nextName() == "type") {
-                            type = reader.nextString()
+                            type = readNullableString(reader)
                         } else {
                             reader.skipValue()
                         }
@@ -254,8 +347,8 @@ object TimelineJsonParser {
             var timeMillis: Long? = null
             while (reader.hasNext()) {
                 when (reader.nextName()) {
-                    "point" -> point = parseCoordinateString(reader.nextString())
-                    "time" -> timeMillis = parseTimestampMillis(reader.nextString())
+                    "point" -> point = readNullableString(reader)?.let { parseCoordinateString(it) }
+                    "time" -> timeMillis = readNullableString(reader)?.let { parseTimestampMillis(it) }
                     else -> reader.skipValue()
                 }
             }
@@ -280,7 +373,7 @@ object TimelineJsonParser {
                 var latLng: String? = null
                 while (reader.hasNext()) {
                     if (reader.nextName().equals("latLng", ignoreCase = true)) {
-                        latLng = reader.nextString()
+                        latLng = readNullableString(reader)
                     } else {
                         reader.skipValue()
                     }
@@ -295,29 +388,28 @@ object TimelineJsonParser {
         }
     }
 
-    private fun readFlexibleDouble(reader: JsonReader): Double {
-        return when (reader.peek()) {
-            JsonToken.STRING -> reader.nextString().toDouble()
-            else -> reader.nextDouble()
-        }
-    }
-
     // ---- 形式C: Takeout Semantic Location History(旧) ----
 
     private fun parseTimelineObjectsArray(reader: JsonReader, builder: RawTrackBuilder) {
         reader.beginArray()
         while (reader.hasNext()) {
-            reader.beginObject()
-            while (reader.hasNext()) {
-                when (reader.nextName()) {
-                    "placeVisit" -> parsePlaceVisit(reader, builder)
-                    "activitySegment" -> parseActivitySegment(reader, builder)
-                    else -> reader.skipValue()
-                }
+            parseArrayElementSafely(reader) { elementReader ->
+                parseTimelineObject(elementReader, builder)
             }
-            reader.endObject()
         }
         reader.endArray()
+    }
+
+    private fun parseTimelineObject(reader: JsonReader, builder: RawTrackBuilder) {
+        reader.beginObject()
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "placeVisit" -> parsePlaceVisit(reader, builder)
+                "activitySegment" -> parseActivitySegment(reader, builder)
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
     }
 
     /** `duration`オブジェクトの開始・終了時刻を読む。新形式(`startTimestamp`)・旧形式(`startTimestampMs`)の両方に対応する。 */
@@ -327,8 +419,8 @@ object TimelineJsonParser {
         var end: Long? = null
         while (reader.hasNext()) {
             when (reader.nextName()) {
-                "startTimestamp", "startTimestampMs" -> start = parseTimestampMillis(reader.nextString())
-                "endTimestamp", "endTimestampMs" -> end = parseTimestampMillis(reader.nextString())
+                "startTimestamp", "startTimestampMs" -> start = readNullableString(reader)?.let { parseTimestampMillis(it) }
+                "endTimestamp", "endTimestampMs" -> end = readNullableString(reader)?.let { parseTimestampMillis(it) }
                 else -> reader.skipValue()
             }
         }
@@ -349,9 +441,9 @@ object TimelineJsonParser {
                     reader.beginObject()
                     while (reader.hasNext()) {
                         when (reader.nextName()) {
-                            "latitudeE7", "latE7" -> latE7 = reader.nextLong()
-                            "longitudeE7", "lngE7" -> lonE7 = reader.nextLong()
-                            "placeId" -> placeId = reader.nextString()
+                            "latitudeE7", "latE7" -> latE7 = readNullableLong(reader)
+                            "longitudeE7", "lngE7" -> lonE7 = readNullableLong(reader)
+                            "placeId" -> placeId = readNullableString(reader)
                             else -> reader.skipValue()
                         }
                     }
@@ -401,8 +493,8 @@ object TimelineJsonParser {
                     start = s
                     end = e
                 }
-                "distance" -> distanceMeters = readFlexibleDouble(reader)
-                "activityType" -> activityType = reader.nextString()
+                "distance" -> distanceMeters = readNullableDouble(reader)
+                "activityType" -> activityType = readNullableString(reader)
                 "waypointPath" -> parseWaypointPath(reader, waypoints)
                 "simplifiedRawPath" -> {
                     if (parseSimplifiedRawPath(reader, builder)) {
@@ -446,8 +538,8 @@ object TimelineJsonParser {
                     var lonE7: Long? = null
                     while (reader.hasNext()) {
                         when (reader.nextName()) {
-                            "latE7" -> latE7 = reader.nextLong()
-                            "lngE7" -> lonE7 = reader.nextLong()
+                            "latE7" -> latE7 = readNullableLong(reader)
+                            "lngE7" -> lonE7 = readNullableLong(reader)
                             else -> reader.skipValue()
                         }
                     }
@@ -478,9 +570,9 @@ object TimelineJsonParser {
                     var timeMillis: Long? = null
                     while (reader.hasNext()) {
                         when (reader.nextName()) {
-                            "latE7" -> latE7 = reader.nextLong()
-                            "lngE7" -> lonE7 = reader.nextLong()
-                            "timestamp" -> timeMillis = parseTimestampMillis(reader.nextString())
+                            "latE7" -> latE7 = readNullableLong(reader)
+                            "lngE7" -> lonE7 = readNullableLong(reader)
+                            "timestamp" -> timeMillis = readNullableString(reader)?.let { parseTimestampMillis(it) }
                             else -> reader.skipValue()
                         }
                     }
@@ -523,31 +615,40 @@ object TimelineJsonParser {
     private fun parseRecordsArray(reader: JsonReader, builder: RawTrackBuilder) {
         reader.beginArray()
         while (reader.hasNext()) {
-            reader.beginObject()
-            var latE7: Long? = null
-            var lonE7: Long? = null
-            var timeMillis: Long? = null
-            while (reader.hasNext()) {
-                when (reader.nextName()) {
-                    "latitudeE7" -> latE7 = reader.nextLong()
-                    "longitudeE7" -> lonE7 = reader.nextLong()
-                    "timestamp" -> timeMillis = parseTimestampMillis(reader.nextString())
-                    // accuracy等の精度向上フィールドはv1スコープ外（docs/decisions.md D-002参照）。
-                    else -> reader.skipValue()
-                }
-            }
-            reader.endObject()
-            if (latE7 != null && lonE7 != null && timeMillis != null) {
-                builder.addPoint(parseE7(latE7), parseE7(lonE7), timeMillis)
+            parseArrayElementSafely(reader) { elementReader ->
+                parseRecord(elementReader, builder)
             }
         }
         reader.endArray()
+    }
+
+    private fun parseRecord(reader: JsonReader, builder: RawTrackBuilder) {
+        reader.beginObject()
+        var latE7: Long? = null
+        var lonE7: Long? = null
+        var timeMillis: Long? = null
+        while (reader.hasNext()) {
+            when (reader.nextName()) {
+                "latitudeE7" -> latE7 = readNullableLong(reader)
+                "longitudeE7" -> lonE7 = readNullableLong(reader)
+                "timestamp" -> timeMillis = readNullableString(reader)?.let { parseTimestampMillis(it) }
+                // accuracy等の精度向上フィールドはv1スコープ外（docs/decisions.md D-002参照）。
+                else -> reader.skipValue()
+            }
+        }
+        reader.endObject()
+        if (latE7 != null && lonE7 != null && timeMillis != null) {
+            builder.addPoint(parseE7(latE7), parseE7(lonE7), timeMillis)
+        }
     }
 }
 
 /**
  * [RawTrack]構築用の内部ビルダー。点数が非常に多い前提（Records.json等）のため、
  * 倍々に拡張するDoubleArray/LongArrayで点列を蓄積し、ボクシングを避ける。
+ *
+ * [build]は複数データ源の結合順・zip格納順が時系列と一致しない場合に備え、
+ * 全点を時刻昇順に安定ソートしてから[RawTrack]を返す（docs/decisions.md D-004参照）。
  */
 private class RawTrackBuilder {
     private var latitudes = DoubleArray(INITIAL_CAPACITY)
@@ -577,12 +678,24 @@ private class RawTrackBuilder {
         timestamps = timestamps.copyOf(newCapacity)
     }
 
-    fun build(): RawTrack = RawTrack(
-        latitudes = latitudes.copyOf(size),
-        longitudes = longitudes.copyOf(size),
-        timestampsMillis = timestamps.copyOf(size),
-        segments = segments.toList()
-    )
+    fun build(): RawTrack {
+        // 安定ソート（KotlinのsortedByはマージソート相当で安定）。同時刻点は元の追加順を保つ。
+        val order = (0 until size).sortedBy { timestamps[it] }
+        val sortedLatitudes = DoubleArray(size)
+        val sortedLongitudes = DoubleArray(size)
+        val sortedTimestamps = LongArray(size)
+        order.forEachIndexed { newIndex, oldIndex ->
+            sortedLatitudes[newIndex] = latitudes[oldIndex]
+            sortedLongitudes[newIndex] = longitudes[oldIndex]
+            sortedTimestamps[newIndex] = timestamps[oldIndex]
+        }
+        return RawTrack(
+            latitudes = sortedLatitudes,
+            longitudes = sortedLongitudes,
+            timestampsMillis = sortedTimestamps,
+            segments = segments.toList()
+        )
+    }
 
     companion object {
         private const val INITIAL_CAPACITY = 64
