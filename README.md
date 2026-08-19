@@ -1,25 +1,30 @@
-# project001
+# timeliner
 
-Claude CodeによるAI開発OS。新規アプリ開発に共通する開発方針・タスク管理・レビュー手順をテンプレートとして提供する。
+位置情報サービスからエクスポートしたタイムラインJSONを読み込み、いつ・どこへ・どのようなルートで移動したかを地図上で振り返れるAndroidアプリ。
+
+## 概要
+
+- タイムラインJSONのインポート（複数のエクスポート形式に対応）
+- 実際の地図上への移動ルート表示
+- ルートを時間経過に沿って動かすアニメーション再生（速度変更・自動速度設定を含む）
+- 期間指定（日・週・月・年など）での振り返り
+- アニメーションの動画としての保存・共有
+- Android端末へAPKとしてインストールして利用する
+
+具体的な要件・技術選定・実装方針は `docs/tasks.md`（タスク管理）・`docs/decisions.md`（設計判断）・`docs/progress.md`（作業履歴）を参照。
+
+## 開発方針
+
+このリポジトリは `project001`（Claude CodeによるAI開発OSテンプレート）から作成した。開発方針・設計原則・ワークフローは AGENTS.md、レビュー方針は REVIEW.md、Claude Code固有の運用は CLAUDE.md に従う。
+
+開発フロー: User → Manager → Planner → Developer → Reviewer → Manager → Complete
+（外部調査が必要な場合のみResearcherが加わる）
 
 ## セットアップ
 
 1. `git clone`等でこのリポジトリを取得する。
-2. （任意）`bash .claude/bootstrap.sh`を実行し、Optional Dependency（Agent-Reach/Code Review Graph/Context7/GitHub CLI等）の導入状況を確認する。インストールは行わず案内のみを表示するため、実行しなくてもproject001は完全に動作する。
-3. AGENTS.mdの開発フロー（User → Manager → Planner → Developer → Reviewer → Manager → Complete）に従って進める。
-
-## 使い方
-
-新規アプリを開発する場合、このリポジトリをコピーして雛形として使う。個別アプリの仕様・実装コードはproject001自体には追加しない。以降はAGENTS.mdの開発フローに従って進める。
-
-### 新規プロジェクトでの初期化
-
-`/init-project`コマンド（`.claude/commands/init-project.md`）を実行するか、以下の手順を直接行う。コピー直後にこの手順を行わないと、新規プロジェクトのSessionStart Hookがproject001自身の構築履歴を表示し続けてしまう。docs/のうちtasks.md/progress.md/decisions.mdの3つのみをリセットする。
-
-- `docs/tasks.md`: 「## タスク一覧」表のヘッダ行と区切り行は残し、`T-xxx`の行をすべて削除する。「## バックログ」の既存項目もすべて削除する。列構成は変えない（SessionStart Hookが状態列の値でフィルタするため）。
-- `docs/progress.md`: 「## 記録フォーマット」直後の`---`（この行を含む）より下をすべて削除する。
-- `docs/decisions.md`: 同様に`---`（この行を含む）より下のD-xxxをすべて削除する。
-- `README.md`: プロジェクト名・概要を書き換える。本節「### 新規プロジェクトでの初期化」自体は削除してよい。
+2. （任意）`bash .claude/bootstrap.sh`を実行し、Optional Dependency（Agent-Reach/Code Review Graph/Context7/GitHub CLI等）の導入状況を確認する。インストールは行わず案内のみを表示するため、実行しなくても開発は開始できる。
+3. Androidアプリのビルド手順は実装後に本節へ追記する。
 
 ## 構成
 
@@ -42,7 +47,7 @@ Claude CodeによるAI開発OS。新規アプリ開発に共通する開発方�
   - Optional Dependency（Capability Layer）の導入状況を案内のみで表示する検出スクリプト。インストールは行わない
 
 - .claude/commands/init-project.md
-  - `/init-project`コマンド。新規プロジェクトでの初期化手順（本READMEの該当節）を実行する
+  - `/init-project`コマンド。新規プロジェクトでの初期化手順を実行する（このリポジトリでは実行済み）
 
 - docs
   - tasks.md: タスクと状態管理
@@ -56,9 +61,4 @@ Claude CodeによるAI開発OS。新規アプリ開発に共通する開発方�
   - research-workflow.md: 外部調査ワークフロー
   - status-line.md: サブエージェント進捗の可視化（Status Line）の仕様
 
-## 開発フロー
-
-User → Manager → Planner → Developer → Reviewer → Manager → Complete
-（外部調査が必要な場合のみResearcherが加わる）
-
-詳細は AGENTS.md・REVIEW.md・docs/agents.md を参照。
+アプリ本体のソースコード構成は、実装開始後に本節へ追記する。
