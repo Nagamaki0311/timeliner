@@ -17,7 +17,7 @@
 |----|--------|--------|------|------------------|------|
 | T-001 | 要件整理・技術選定・実装計画の作成 | 高 | 完了 | planner | D-002参照。地図=MapLibre+OpenFreeMap、動画=Media3 Transformer、JSON=JsonReaderストリーミング4形式対応、永続化=素のSQLite、minSdk 29 |
 | T-002 | 環境確認＋プロジェクト雛形＋地図表示画面 | 高 | 完了 | developer | Gradleプロジェクト新設、MapLibre地図をComposeで表示するだけの最小画面。Android SDK有無をここで確認しdocs/progress.mdに記録 |
-| T-003 | タイムラインJSONパース（4形式対応） | 高 | 未着手 | developer | 端末内Timeline(Android/iOS)・Takeout Semantic Location History・Takeout Records。共通中間モデルへ正規化 |
+| T-003 | タイムラインJSONパース（4形式対応） | 高 | 完了 | developer | 端末内Timeline(Android/iOS)・Takeout Semantic Location History・Takeout Records。共通中間モデルへ正規化。JsonReaderのJVMテスト制約はD-003参照 |
 | T-004 | GPSノイズ除去・ルート簡略化 | 高 | 未着手 | developer | 正規化→速度スパイク除去→停留ジッタ抑制→時間ガード付きDouglas-Peucker→長期間欠損の分断 |
 | T-005 | 永続化とインポート導線 | 高 | 未着手 | developer | 素のSQLite（日単位BLOB）、SAF経由のファイル/zip取り込み |
 | T-006 | 地図上のルート表示＋期間指定（日/週/月/年） | 高 | 未着手 | developer | RouteFrameRenderer（画面・動画共通描画関数）の新設 |

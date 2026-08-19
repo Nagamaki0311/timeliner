@@ -83,3 +83,27 @@
 - 以降のdeveloperタスクは本D-002の決定を前提に実装する。
 - 実データ未検証（項目2）は既知のリスクとして残る。ユーザーが実データでの検証を望む場合、後日サンプル提供を受けて追加のdeveloper/reviewerサイクルを回す。
 
+---
+
+## D-003: `android.util.JsonReader`はプレーンなJVM単体テスト（`app/src/test`）から実行できない（実測確認）
+
+- 日付: 2026-08-19
+- 状態: 採用
+
+### 背景
+- T-003のタスク指示には「`JsonReader`を使う走査部分はAndroid API依存のためJVM単体テストの対象外でよい（Robolectric等の追加依存は導入しない）」という記述と、「`TimelineJsonParserTest.kt`...`JsonReader`はJVM単体テストから直接使えるので実際にパーサを通してテストできる」という記述が併記されており、内容が矛盾していた。
+- 実装前に最小の再現テスト（`JsonReader(StringReader(...))`で単純なJSONを読むだけのテスト）を`./gradlew testDebugUnitTest`で実行して確認したところ、`java.lang.RuntimeException: Method beginObject in android.util.JsonReader not mocked.`で失敗した。これはAGP（Android Gradle Plugin）がローカル単体テスト用に生成する「モック化android.jar」が、`isReturnDefaultValues`未設定（既定のfalse）の場合、android.*のAPI呼び出しをすべて例外送出に置き換えるという既知の仕組みによるもので、対象クラスの実装が純粋なJavaコードであるか（`android.util.JsonReader`自体はネイティブ依存のない自己完結したクラス）どうかに関わらず一律に適用される。Robolectric（対象クラスを実装ごと差し替えるフレームワーク）以外にこれを回避する設定オプションは存在しない。
+
+### 決定
+- `TimelineJsonParser.kt`本体（4形式のルート判別・セグメント/E7/geo:/度記号パースの分岐ロジック）は、指示通り`android.util.JsonReader`によるストリーミング実装のまま維持する（実機・実際のアプリ実行では正しく動作する。Robolectricは導入しない）。
+- JVM単体テスト（`app/src/test`）では、`android.util.JsonReader`に依存しない部分のみを検証する: 純Kotlinの`CoordinateParsing.kt`・`TimestampParsing.kt`（座標・時刻パース）と、`TimelineJsonParser.kt`内の`isTargetZipEntry`（zipエントリのパス判定、純Kotlin文字列処理）。
+- `TimelineJsonParserTest.kt`は作成するが、上記の制約をコメントで明記した上で`isTargetZipEntry`のみを検証する内容とする。4形式（A〜D）の合成JSONを実際に`TimelineJsonParser.parseJson`へ通して点数・座標・時刻を検証する自動テストは、この制約により今回追加できていない。
+
+### 理由
+- 判定ラダー3（標準ライブラリ・既存の成熟した外部ライブラリで足りるか）に照らすと、`android.util.JsonReader`は本番動作としては標準ライブラリで十分足りており、問題はテストツール側の制約でしかない。この制約を回避するためだけに独自のJSON字句解析器を再実装する案も検討したが、本番実装（`android.util.JsonReader`）とテスト専用実装という2つの独立したJSONパーサを維持することになり、挙動の乖離リスクと保守コストが利益を上回ると判断し却下した（AGENTS.md「責務は分離するがファイルは増やさない」「投機的な抽象化は追加しない」に反する）。
+- Robolectric導入はタスク指示で明示的に禁止されている。
+
+### 影響
+- 4形式（端末内Timeline Android/iOS、Takeout Semantic Location History、Takeout Records）それぞれのパース分岐ロジックの正しさは、コードレビューによる確認と手動でのフィクスチャ照合に留まり、自動テストによる継続的な保証がない状態が残る（D-002項目2の「実データ未検証」とは別の、テスト自動化に関する既知のリスクとして追加で記録する）。
+- 将来、実機/エミュレータが利用可能になった場合はandroidTest（instrumented test）としてこの部分を検証することが望ましい。Robolectric導入の是非を再検討する場合は、その時点で改めてユーザー確認を取ること。
+
