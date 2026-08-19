@@ -19,7 +19,7 @@
 | T-002 | 環境確認＋プロジェクト雛形＋地図表示画面 | 高 | 完了 | developer | Gradleプロジェクト新設、MapLibre地図をComposeで表示するだけの最小画面。Android SDK有無をここで確認しdocs/progress.mdに記録 |
 | T-003 | タイムラインJSONパース（4形式対応） | 高 | 完了 | developer | 端末内Timeline(Android/iOS)・Takeout Semantic Location History・Takeout Records。共通中間モデルへ正規化。Reviewer指摘はT-003bで対応済み（D-004参照） |
 | T-003b | T-003レビュー指摘の修正（null耐性・複数データ源の統合・Gson化） | 高 | 完了 | developer | D-004参照。zip内Records.json/Semantic Location History混在時の優先順位、時刻ソート、JSON null耐性、Gson JsonReaderへの切替とパース統合テスト追加 |
-| T-004 | GPSノイズ除去・ルート簡略化 | 高 | 未着手 | developer | 正規化→速度スパイク除去→停留ジッタ抑制→時間ガード付きDouglas-Peucker→長期間欠損の分断 |
+| T-004 | GPSノイズ除去・ルート簡略化（着手前にT-003b再検証のMedium/Low指摘2件も修正） | 高 | 未着手 | developer | 正規化→速度スパイク除去→停留ジッタ抑制→時間ガード付きDouglas-Peucker→長期間欠損の分断。加えてTimelineJsonParser.ktの要素スキップ時ログ出力（D-004決定3未実装分）とトップレベル配列nullの耐性を追加する |
 | T-005 | 永続化とインポート導線 | 高 | 未着手 | developer | 素のSQLite（日単位BLOB）、SAF経由のファイル/zip取り込み |
 | T-006 | 地図上のルート表示＋期間指定（日/週/月/年） | 高 | 未着手 | developer | RouteFrameRenderer（画面・動画共通描画関数）の新設 |
 | T-007 | アニメーション再生と速度制御 | 高 | 未着手 | developer | データ時刻↔再生時刻の単調写像、自動速度（非線形圧縮）・手動倍率 |
