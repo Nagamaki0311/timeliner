@@ -335,6 +335,44 @@ class TimelineJsonParserTest {
         assertEquals(1700000001000L, track.point(0).timestampMillis)
     }
 
+    @Test
+    fun parseJson_malformedElementInArray_skipsElementButParsesOtherElements() {
+        val json = """
+            {
+              "timelineObjects": [
+                {
+                  "placeVisit": {
+                    "location": {"latitudeE7": 356812000, "longitudeE7": 1397671000, "placeId": "PID_BAD"},
+                    "duration": "not-an-object"
+                  }
+                },
+                {
+                  "placeVisit": {
+                    "location": {"latitudeE7": 356813000, "longitudeE7": 1397672000, "placeId": "PID_GOOD"},
+                    "duration": {"startTimestamp": "1700000000000", "endTimestamp": "1700000001000"}
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1, track.segments.size)
+        assertEquals("PID_GOOD", track.segments[0].placeId)
+    }
+
+    @Test
+    fun parseJson_locationsFieldIsExplicitNull_parsesSuccessfullyWithNoPoints() {
+        val json = """{"locations": null}"""
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(0, track.pointCount)
+        assertEquals(0, track.segments.size)
+    }
+
     // ---- zip: 複数データ源の優先順位付け・時刻ソート ----
 
     @Test

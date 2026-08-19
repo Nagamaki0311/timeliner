@@ -1,5 +1,6 @@
 package com.nagamaki0311.timeliner.data.parser
 
+import android.util.Log
 import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
@@ -29,6 +30,8 @@ import java.util.zip.ZipInputStream
  * 元の`reader`の読み取り位置は壊れず、その要素だけをスキップしてファイル全体のパースを継続できる。
  */
 object TimelineJsonParser {
+
+    private const val TAG = "TimelineJsonParser"
 
     /** 単体の`.json`ファイルをパースする。 */
     fun parseJson(input: InputStream): RawTrack {
@@ -152,7 +155,8 @@ object TimelineJsonParser {
                 parseElement(elementReader)
             }
         } catch (e: RuntimeException) {
-            // 想定外の型不一致・欠損等が発生した要素はスキップし、他の要素の処理は継続する。
+            // 想定外の型不一致・欠損等が発生した要素はスキップし、他の要素の処理は継続する（docs/decisions.md D-004決定3）。
+            Log.w(TAG, "要素のパースに失敗したためスキップします: ${e.message}", e)
         }
     }
 
@@ -196,6 +200,10 @@ object TimelineJsonParser {
     // ---- 形式A/B: 端末内Timeline(Android/iOS) ----
 
     private fun parseDeviceTimelineArray(reader: JsonReader, builder: RawTrackBuilder) {
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return
+        }
         reader.beginArray()
         while (reader.hasNext()) {
             parseArrayElementSafely(reader) { elementReader ->
@@ -391,6 +399,10 @@ object TimelineJsonParser {
     // ---- 形式C: Takeout Semantic Location History(旧) ----
 
     private fun parseTimelineObjectsArray(reader: JsonReader, builder: RawTrackBuilder) {
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return
+        }
         reader.beginArray()
         while (reader.hasNext()) {
             parseArrayElementSafely(reader) { elementReader ->
@@ -613,6 +625,10 @@ object TimelineJsonParser {
     // ---- 形式D: Takeout Records(生GPS) ----
 
     private fun parseRecordsArray(reader: JsonReader, builder: RawTrackBuilder) {
+        if (reader.peek() == JsonToken.NULL) {
+            reader.nextNull()
+            return
+        }
         reader.beginArray()
         while (reader.hasNext()) {
             parseArrayElementSafely(reader) { elementReader ->

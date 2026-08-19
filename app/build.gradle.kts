@@ -36,6 +36,14 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        unitTests {
+            // TimelineJsonParserがandroid.util.Logでスキップ理由をログ出力するため、
+            // JVM単体テストでも未モック化のandroid.*呼び出しを例外にせず既定値で通す（Robolectricは導入しない）。
+            isReturnDefaultValues = true
+        }
+    }
 }
 
 kotlin {

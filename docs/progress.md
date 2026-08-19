@@ -17,6 +17,30 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-19 T-004 GPSノイズ除去・ルート簡略化（+T-003b再検証指摘2件の修正）
+
+### 実施内容
+- **T-003b再検証指摘の修正**（`app/src/main/java/com/nagamaki0311/timeliner/data/parser/TimelineJsonParser.kt`）
+  - Medium: `parseArrayElementSafely`のcatchブロックにコメントのみでログ出力が無かった問題を修正。`android.util.Log.w("TimelineJsonParser", ...)`でスキップ理由（例外メッセージ）を出力するようにした（D-004決定3準拠）。
+  - Low: `parseRootObject`の`"semanticSegments"`/`"timelineObjects"`/`"locations"`各分岐が呼び出す`parseDeviceTimelineArray`/`parseTimelineObjectsArray`/`parseRecordsArray`の3関数それぞれの先頭に`reader.peek() == JsonToken.NULL`判定を追加し、値が明示的に`null`の場合は`nextNull()`でスキップして空配列として扱うようにした（`{"locations": null}`等で`IllegalStateException`によりファイル全体のパースが失敗していた問題を解消）。3関数を直接null耐性化したことで、`parseRoot`のトップレベル配列ケース（形式Bの`parseDeviceTimelineArray`呼び出し）も同じ実装を共有する。
+  - `android.util.Log`はJVM単体テストでは既定で「not mocked」例外を投げる（D-003と同種の制約）ため、`app/build.gradle.kts`の`android { testOptions { unitTests { isReturnDefaultValues = true } } }`を追加し、未モック化のandroid.*呼び出しを例外にせず既定値で通すようにした（Robolectricは導入しない）。
+  - `TimelineJsonParserTest.kt`に2件追加: 型不一致で例外が発生する要素があっても他の要素は正常にパースされること（ログ出力経路を実際に通す）、`"locations": null`が0点0セグメントで正常にパースされること。
+- **T-004本体**: `app/src/main/java/com/nagamaki0311/timeliner/process/`にパイプラインを新設した（すべて純Kotlin、Android API非依存）。
+  - `Mercator.kt`: 緯度経度↔Webメルカトル（EPSG:3857相当）ワールド座標変換、2点間のメートル距離計算。
+  - `TrackCleaner.kt`: `RawTrack`を入力に、正規化（時刻昇順ソート・同一時刻重複除去・範囲外座標`|lat|>90`/`|lon|>180`と`(0,0)`の破棄。`RawTrack`に`accuracy`が無いため精度フィルタは実装しない）→速度スパイク除去（連続点間速度が閾値[既定300km/h]超、かつ直前採用点→次点でスキップした場合の速度が閾値内に収まる「1点だけ飛んで戻る」パターンのみ除去。航空機区間等の持続的高速移動は前後・スキップいずれの速度も閾値超のため誤って除去しない）→停留ジッタ抑制（直前採用点から距離15m未満かつ経過時間60秒未満の点を破棄。距離・時間いずれかが閾値以上なら残す）→長時間欠損（既定6時間超）での分断判定（`segmentStartIndices`として返す）の4段パイプライン。`CleanedTrack`（`DoubleArray`/`LongArray`＋`segmentStartIndices`、`segmentRange(i)`ヘルパー付き）を出力する。各段の入出力は内部の`PointSeries`（DoubleArray/LongArrayベース、`internal`公開でテストから直接呼べる）。大量点でのGC負荷を避けるため、`TimelineJsonParser`内の`RawTrackBuilder`と同じ倍々拡張バッファのパターンを再利用した。
+  - `Simplifier.kt`: Douglas-Peuckerによる簡略化。**再帰を一切使わず**、処理範囲`[start,end]`をヒープ上のLongArray（start/endを1個のLongへビットパック）で管理する明示スタック（`RangeStack`）で実装したため、数十万点規模でも`StackOverflowError`が構造的に発生しない（呼び出しスタックを一切消費しない設計）。時間ガード: 隣接点間の経過時間が閾値（既定5分）を超える箇所の両端点は、DP走査時に実効距離を`Double.MAX_VALUE`とすることで必ず分割点として選ばれ（＝必ず残る）、幾何的な偏差に関わらず間引かれない。点数上限オプション（`maxPointCount`）: DP後もこの点数を超える場合epsilonを倍々にして再実行する。当初「1回のepsilon倍化で点数が変化しなければ打ち切る」という早期終了ヒューリスティックを実装したが、epsilonが初期値近辺（実データの偏差スケールよりはるかに小さい値）にある間は点数が全く変化しない区間が続くことがあり、これを「収束した」と誤判定して早期に打ち切ってしまうバグがテストで発覚したため、単純な反復回数上限（既定60回）のみで打ち切る方式に修正した（epsilonは指数的に成長するため60回で天文学的な値に達し、時間ガードで保護された点だけが残る理論上の下限に確実に到達する）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（新規: `MercatorTest`7件、`TrackCleanerTest`12件[正規化3・速度スパイク除去2・停留ジッタ抑制3・分断判定3・パイプライン統合1]、`SimplifierTest`6件[矩形・直線+外れ値・時間ガードあり/なし・点数上限・大規模データ]、`TimelineJsonParserTest`に2件追加で計19件。既存の`CoordinateParsingTest`9件・`TimestampParsingTest`7件も引き続きパス）。
+- `./gradlew assembleDebug`が成功。
+- **性能計測**（一時的なベンチマークテストを追加して実行し、記録後に削除した）: 合成データ10万点（緯度経度をランダムウォークさせ、20,000点ごとに7時間の欠損を意図的に混入）に対し、`TrackCleaner.clean`が74ms（出力27,064点、5セグメント）、続けて全セグメントに`Simplifier.simplify`（epsilon=10m、maxPointCount=5000）を適用して39ms（出力17,013点）。合計約113msで完了しており、「大量の位置情報を扱っても極端に動作が重くならない」という要件を満たす実用的な速度であることを確認した。
+- `simplify_straightLineWithOneOutlier_keepsEndpointsAndOutlier`テストの作成過程で、DPの再帰分割は「外れ値1点を挟んだ直線」であっても、外れ値を分割点として選んだ後の2つの部分区間それぞれのchord（直線と外れ値を結ぶ斜めの線）に対して残りの直線上の点が非ゼロの偏差を持つため、epsilonが小さいと想定より多くの点が残ることを実測で確認した（数学的には正しいDP挙動）。テストのepsilonをこの副次的な偏差[約89m]より大きく設定して意図通りの結果[両端＋外れ値のみ]を検証した。
+
+### 次回開始位置
+- T-005（永続化とインポート導線）に着手する。`TrackCleaner.clean`→`Simplifier.simplify`（セグメントごと）の出力をSQLite（日単位BLOB）へ保存する設計を想定。
+- 懸念点（将来的な見直し候補）: `RawTrack`に`accuracy`情報が無いため、正規化段階での精度フィルタ（accuracy>100m破棄）は未実装のまま。将来`RawTrack`にaccuracyを追加する場合はT-003側のパーサ・本タスクの`TrackCleaner.normalize`の両方に手を入れる必要がある。
+- 懸念点: `Simplifier.simplify`は1セグメント分の点列を渡す前提の関数として実装した（`TrackCleaner`の`segmentStartIndices`で分割済みの各区間を呼び出し側がスライスして渡す）。T-006（地図表示）でこの呼び出し側の配線（`CleanedTrack.segmentRange`を使ったスライス処理）を実装すること。
+
 ## 2026-08-19 T-003b T-003レビュー指摘の修正（null耐性・複数データ源の統合・Gson化）
 
 ### 実施内容
