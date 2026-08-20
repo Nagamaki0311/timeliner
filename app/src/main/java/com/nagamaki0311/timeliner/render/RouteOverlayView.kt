@@ -87,12 +87,10 @@ class RouteOverlayView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        val progress = currentProgress()
         RouteFrameRenderer.draw(
             canvas = canvas,
             screenCoordinates = screenCoordinates,
-            progress = progress,
-            currentPositionScreen = RouteFrameRenderer.currentPositionAtProgress(screenCoordinates, progress),
+            progress = currentProgress(),
             dateTimeText = dateTimeText
         )
     }

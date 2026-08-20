@@ -134,9 +134,16 @@ class PlaybackController(private val scope: CoroutineScope) {
         }
     }
 
-    /** 指定した進捗（0.0〜1.0）へシークする。再生中/一時停止中いずれでも呼べる。 */
+    /**
+     * 指定した進捗（0.0〜1.0）へシークする。再生中/一時停止中いずれでも呼べる。
+     * 再生ループが動いていると自動更新される[elapsedPlaybackMillis]とシーク値が競合するため、
+     * [pause]と同等の処理で再生ループを停止してから進捗を書き換える（docs/decisions.md D-008決定1）。
+     * シーク後も再生を続けたい場合、呼び出し元（[com.nagamaki0311.timeliner.ui.TimelineScreen]）が
+     * シーク完了時に明示的に[play]を呼ぶ。
+     */
     fun seekTo(progress: Float) {
         val currentTimeline = timeline ?: return
+        pause()
         elapsedPlaybackMillis = (progress.coerceIn(0f, 1f) * currentTimeline.totalPlaybackMillis()).toLong()
         publishState()
     }

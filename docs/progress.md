@@ -17,6 +17,21 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-007b T-007レビュー指摘の修正（再生中シークの競合、trimByProgress二重計算）
+
+### 実施内容
+- D-008決定1（Medium）: `app/src/main/java/com/nagamaki0311/timeliner/playback/PlaybackController.kt`の`seekTo()`冒頭で`pause()`を呼ぶよう変更。再生中にシークバーをドラッグしても再生ループ（`playbackJob`）が停止するため、ユーザーのシーク値と16msごとの自動更新値が`elapsedPlaybackMillis`を奪い合わなくなる。
+  - シーク後に再生を継続したい場合は呼び出し元が明示的に`play()`を呼ぶ設計（決定どおり）。`app/src/main/java/com/nagamaki0311/timeliner/ui/PlaybackControls.kt`に`onSeekFinished: () -> Unit`パラメータを追加し、`Slider`の`onValueChangeFinished`に接続。`app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`側でドラッグ開始時点の`playbackState.isPlaying`を`resumePlaybackAfterSeek`として記憶し（`isSeeking`フラグでドラッグ中の複数回の`onSeek`呼び出しから最初の1回だけを判定）、`onSeekFinished`で真なら`viewModel.play()`を呼んで再開する。一般的な動画プレーヤーのシークバーUX（ドラッグ中は再生停止、離すと元の再生状態に戻る）に合わせた。
+- D-008決定2（Low）: `app/src/main/java/com/nagamaki0311/timeliner/render/RouteFrameRenderer.kt`の`draw()`が`trimByProgress`を1回だけ呼び、その結果（`FloatArray`）をルート線描画（`drawRoute`）と現在位置マーカー（新設のprivate `markerPosition()`、旧`currentPositionAtProgress`のロジックを移設）の両方で使い回すようリファクタ。`draw()`の引数から`currentPositionScreen: ScreenPoint?`を削除し（マーカーは常に`trimmed`の末尾点から導出するため呼び出し元が別途渡す必要がなくなった）、公開関数だった`currentPositionAtProgress`も削除。呼び出し元は`RouteOverlayView.onDraw`のみで、T-008未着手のため他に影響なし。`app/src/main/java/com/nagamaki0311/timeliner/render/RouteOverlayView.kt`の`onDraw`を新シグネチャに合わせて簡略化。
+
+### 結果
+- `./gradlew testDebugUnitTest`成功（既存`PlaybackTimelineTest`含め全件パス、影響ファイルはいずれもAndroid API依存でJVM単体テスト対象外のため新規テストなし）。
+- `./gradlew assembleDebug`成功。
+- 決定1（`seekTo`のシーク中再生停止・再開）はAndroidの`CoroutineScope`/Compose `Slider`ジェスチャーに依存するため、タスク指示どおりJVM単体テストでの検証は行わず、`pause()`を再利用する形（ロジックの共有）でレビュー時にコードから正しさを確認できるようにした。実機/エミュレータでの目視確認は本セッションでは未実施（環境制約、既知の制約を継続）。
+
+### 次回開始位置
+- T-008（アニメーションの動画書き出し）に着手する。`RouteFrameRenderer.draw`のAPIが`currentPositionScreen`引数無しに変わった点を踏まえて実装すること。
+
 ## 2026-08-20 T-007 アニメーション再生と速度制御
 
 ### 実施内容

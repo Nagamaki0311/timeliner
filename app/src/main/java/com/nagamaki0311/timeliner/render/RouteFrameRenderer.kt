@@ -90,37 +90,34 @@ object RouteFrameRenderer {
      * @param screenCoordinates 画面座標へ変換済みの点列（`x0, y0, x1, y1, ...`、時刻昇順）。
      * @param progress 描画する区間の進捗（0.0=先頭点のみ、1.0=全区間）。T-007で再生中の現在時刻に応じた
      *   値を渡す（[com.nagamaki0311.timeliner.render.RouteOverlayView]）。
-     * @param currentPositionScreen 現在位置マーカーを描画する画面座標。[currentPositionAtProgress]で
-     *   [progress]と整合させて求めた値を渡すこと。nullなら描画しない。
      * @param dateTimeText 画面下部に表示する日時テキスト。nullなら描画しない。
      */
     fun draw(
         canvas: Canvas,
         screenCoordinates: FloatArray,
         progress: Float,
-        currentPositionScreen: ScreenPoint?,
         dateTimeText: String?,
         style: Style = DEFAULT_STYLE
     ) {
-        drawRoute(canvas, trimByProgress(screenCoordinates, progress.coerceIn(0f, 1f)), style)
-        if (currentPositionScreen != null) {
-            drawMarker(canvas, currentPositionScreen, style)
-        }
+        // trimByProgressの結果（FloatArray確保＋arraycopy、最大3000点分）をルート線描画と現在位置マーカーの
+        // 両方で使い回す。以前はcurrentPositionAtProgressとdrawRouteが独立に計算し毎フレーム2回無駄が発生していた
+        // （docs/decisions.md D-008決定2）。
+        val trimmed = trimByProgress(screenCoordinates, progress.coerceIn(0f, 1f))
+        drawRoute(canvas, trimmed, style)
+        markerPosition(trimmed)?.let { drawMarker(canvas, it, style) }
         if (dateTimeText != null) {
             drawDateTimeText(canvas, dateTimeText, style)
         }
         drawAttribution(canvas, style)
     }
 
-    /**
-     * [progress]（0.0〜1.0）に対応する画面座標（区間途中は前後点の線形補間）を返す。
-     * [trimByProgress]の末尾点をそのまま使うことで、[draw]が描画するルート線の終端と
-     * 現在位置マーカーの位置を必ず一致させる（T-007）。点が無い場合はnull。
-     */
-    fun currentPositionAtProgress(screenCoordinates: FloatArray, progress: Float): ScreenPoint? {
-        val trimmed = trimByProgress(screenCoordinates, progress.coerceIn(0f, 1f))
-        if (trimmed.size < 2) return null
-        return ScreenPoint(trimmed[trimmed.size - 2], trimmed[trimmed.size - 1])
+    /** [trimByProgress]で切り詰め済みの点列の末尾点を現在位置マーカーの画面座標として返す。点が無い場合はnull。 */
+    private fun markerPosition(trimmedScreenCoordinates: FloatArray): ScreenPoint? {
+        if (trimmedScreenCoordinates.size < 2) return null
+        return ScreenPoint(
+            trimmedScreenCoordinates[trimmedScreenCoordinates.size - 2],
+            trimmedScreenCoordinates[trimmedScreenCoordinates.size - 1]
+        )
     }
 
     /**

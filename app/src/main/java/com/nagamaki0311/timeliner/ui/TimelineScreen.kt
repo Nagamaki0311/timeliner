@@ -31,6 +31,10 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
 
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var overlayView by remember { mutableStateOf<RouteOverlayView?>(null) }
+    // シークバードラッグ中は`PlaybackController.seekTo`が再生ループを止めるため（docs/decisions.md D-008決定1）、
+    // ドラッグ開始時点で再生中だったかを覚えておき、ドラッグ終了時に再生を再開する（一般的な動画プレーヤーのUX）。
+    var isSeeking by remember { mutableStateOf(false) }
+    var resumePlaybackAfterSeek by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
         PeriodSelector(period = period, onPeriodChange = viewModel::selectPeriod)
@@ -55,7 +59,17 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
         PlaybackControls(
             state = playbackState,
             onPlayPause = { if (playbackState.isPlaying) viewModel.pause() else viewModel.play() },
-            onSeek = viewModel::seekTo,
+            onSeek = { progress ->
+                if (!isSeeking) {
+                    isSeeking = true
+                    resumePlaybackAfterSeek = playbackState.isPlaying
+                }
+                viewModel.seekTo(progress)
+            },
+            onSeekFinished = {
+                isSeeking = false
+                if (resumePlaybackAfterSeek) viewModel.play()
+            },
             onSpeedModeChange = viewModel::setSpeedMode
         )
     }

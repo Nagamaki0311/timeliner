@@ -31,6 +31,7 @@ fun PlaybackControls(
     state: PlaybackController.State,
     onPlayPause: () -> Unit,
     onSeek: (Float) -> Unit,
+    onSeekFinished: () -> Unit,
     onSpeedModeChange: (SpeedMode) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -51,6 +52,7 @@ fun PlaybackControls(
         Slider(
             value = state.progress,
             onValueChange = onSeek,
+            onValueChangeFinished = onSeekFinished,
             modifier = Modifier.fillMaxWidth()
         )
         SpeedModeRow(speedMode = state.speedMode, onSpeedModeChange = onSpeedModeChange)
