@@ -17,6 +17,45 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-005 永続化とインポート導線
+
+### 実施内容
+- D-002の永続化方針（素の`SQLiteOpenHelper`、日単位BLOB格納）に従い、`app/src/main/java/com/nagamaki0311/timeliner/store/`を新設した。
+  - `TimelineDb.kt`: `SQLiteOpenHelper`（`DATABASE_VERSION=1`）。`onCreate`でタスク指示通りの`days`（PK: `date`）・`segments`（`INTEGER PRIMARY KEY`のautoincrement `id`）を作成し、期間クエリ（`WHERE date BETWEEN ?`）用に`segments.date`へインデックスを追加した。`onUpgrade`はバージョン1のみのため両テーブルを再作成する最小実装。
+  - `PointBlobCodec.kt`: 点列⇄16バイト/点BLOB（lat_e7 Int32・lon_e7 Int32・timeMillis Int64、`ByteBuffer`でビッグエンディアンにパック）の相互変換。純Kotlinで実装。`|lat|<=90`・`|lon|<=180`のE7値（最大18億）がInt32（最大約21.4億）に収まることを確認済み。
+  - `TimelineRepository.kt`: `importTrack(RawTrack)`が`TrackCleaner.clean`→日付分割→`days`/`segments`書き込みまでを1トランザクション（`beginTransaction`/`setTransactionSuccessful`/`endTransaction`）で行う。日付の決定はタスク指示通り端末タイムゾーン（`ZoneId.systemDefault()`）に常時フォールバックする（4形式パーサ側にタイムゾーンオフセット情報を持つフィールドが無いため、D-002決定時点でこのフォールバックのみが選択肢）。1つの連続点列が日付をまたぐ場合は`CleanedTrack`の時刻昇順性を利用して連続する同一日付の区間ごとに分割し、複数の`days`行へ書き込む。各日の`distance_meters`は日内の連続点間のHaversine距離（`Mercator.haversineDistanceMeters`）の合計だが、`TrackCleaner`が検出した長時間欠損の分断点（`segmentStartIndices`）をまたぐ点同士は実際に移動していないため距離に含めない。再インポート時の冪等性として、`days`は`date`のPRIMARY KEY制約により`INSERT OR REPLACE`で上書き、`segments`はインポート対象の日付集合に該当する既存行を書き込み前に削除してから挿入する（`segments`にはPKで一意化できる自然キーが無いため）。読み出し用に`queryDays`/`querySegments`（いずれも日付範囲指定、`BETWEEN`）も実装した。
+    - 既知の制約（`ponytail`コメントとして`TimelineRepository.kt`内に明記）: `segments.place_name`列は常にNULLになる。現状の4形式パーサ（`TimelineJsonParser`）が滞在地点の表示名を一切パースしていない（`placeId`のみ）ため。表示名が必要になった時点でパーサ側の対応が別途必要（本タスクのスコープ外）。
+  - `data/ImportSource.kt`: `Uri`から`ContentResolver.openInputStream`で`InputStream`を開き、zip判定（拡張子`.zip`、または内容先頭2バイトのzipマジックナンバー`PK`）で`TimelineJsonParser.parseZip`/`parseJson`のどちらを呼ぶか振り分ける。zip判定用に`parseZip`が要求する`() -> InputStream`（同一Uriを指す新しいストリームを返す関数）を素直に組み立てられる設計にした。
+  - `ui/TimelineViewModel.kt`: `TimelineRepository`を保持し、`importFrom(context, uri)`が`viewModelScope.launch { withContext(Dispatchers.IO) { ... } }`でUIスレッドをブロックせずにパース→クリーニング→DB書き込みを実行、結果を`StateFlow<ImportUiState>`（`Idle`/`InProgress`/`Success`/`Error`）で公開する。DIライブラリを導入しない方針（D-002）に従い、`TimelineViewModel.factory(context)`という`ViewModelProvider.Factory`を返す簡易ファクトリメソッドで`TimelineRepository`/`TimelineDb`を組み立てる。
+  - `ui/ImportScreen.kt`: `ActivityResultContracts.OpenDocument()`でファイル選択（MIMEタイプはプロバイダ依存で信頼できないため`*/*`、内容判定は`ImportSource`側で行う）、`ImportUiState`に応じて進捗（`CircularProgressIndicator`）・完了サマリ（点数・セグメント数・期間・日数）・エラーメッセージを表示する。
+  - `MainActivity.kt`: Navigationライブラリを導入せず、Compose標準の`TabRow`+`remember { mutableIntStateOf }`による状態切り替えで「地図」「インポート」の2画面を切り替える構成にした。`TimelineViewModel`は`by viewModels { TimelineViewModel.factory(this) }`でActivityスコープに保持する。
+- 依存追加（`gradle/libs.versions.toml`・`app/build.gradle.kts`）: `androidx.activity:activity-ktx`（`by viewModels()`委譲用。`activity-compose`は`androidx.activity:activity`のみを推移的依存に持ち`activity-ktx`は含まないため明示追加が必要と判明）、`androidx.lifecycle:lifecycle-viewmodel-ktx`（`ViewModel`基底クラス・`viewModelScope`拡張用）。いずれも既存の`activityCompose`/`lifecycleRuntimeKtx`と同じバージョン系列（1.12.4 / 2.10.0）でGradleキャッシュに存在することを事前に確認してから追加した（新規ダウンロードなしでビルド成功）。
+- テスト: `app/src/test/java/com/nagamaki0311/timeliner/store/PointBlobCodecTest.kt`を新設（6件: ラウンドトリップ、1点16バイトの検証、空配列、境界値[±90/±180度、`Long.MIN_VALUE`/`Long.MAX_VALUE`]、不正サイズBLOBでの例外、配列長不一致での例外）。`TimelineDb`/`TimelineRepository`/`ImportSource`は`android.database.sqlite.SQLiteDatabase`/`android.content.ContentResolver`等のAndroid API実体に依存するため、D-003と同種の制約（JVM単体テストでは`android.*`呼び出しがモック化され実際のDBが動かない）によりJVM単体テストの対象外とした（コードレビューによる確認に留まる。実機/エミュレータでのandroidTest追加が将来望ましい点もD-003と同様）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（既存66件+新規`PointBlobCodecTest`6件の計72件すべてパス）。
+- `./gradlew assembleDebug`が成功（新規依存追加後も問題なし）。
+- 性能計測（一時的なベンチマークテストを追加して実行し、記録後に削除した。T-004と同じ合成データ生成方針: 緯度経度をランダムウォークさせ、20,000点ごとに7時間の欠損を混入した10万点、今回はRecords.json形式のJSONテキスト[約7MB]として実際に構築し`TimelineJsonParser.parseJson`へ通した）:
+  - `parseJson`（JSON文字列→`RawTrack`）: 約1610ms、100,000点。
+  - `TrackCleaner.clean`: 約141ms、出力72,402点・6セグメント。
+  - `Simplifier.simplify`（epsilon=10m, maxPointCount=5000、全セグメントに適用): 約116ms、出力12,862点。
+  - `PointBlobCodec.encode`（クリーニング済み・未簡略化の72,402点をBLOB化、実際に`days`へ格納する対象）: 約24ms、1,158,432バイト。
+  - 合計（パース+クリーニング+簡略化+エンコード）: 約1892ms。
+  - **注記（計測できなかった部分）**: `android.database.sqlite.SQLiteDatabase`はJVM単体テスト環境では動作しない（D-003と同種の制約、`isReturnDefaultValues=true`は未モック呼び出しを例外にせず既定値で通すだけで実際のDBは動かない）ため、実際の`INSERT`トランザクション（`TimelineRepository.importTrack`の`days`/`segments`書き込み）の所要時間は本セッションでは測定できていない。SQLiteは一般にディスクI/Oが主要コストであり、`beginTransaction`/`setTransactionSuccessful`/`endTransaction`で1トランザクションにまとめている設計により少数回のfsyncで済む想定だが、実測値ではない。実機/エミュレータが利用可能になった時点でandroidTestとして計測することが望ましい。
+  - 上記より、DB書き込みを除いた「パース→クリーニング→簡略化→BLOBエンコード」の合計約1.9秒は、10万点規模のインポートでも実用的な速度であることを確認した。
+
+### 懸念点（保守的判断で進めた不明点、Auto Mode下）
+- `segments.place_name`は現状常にNULL（上記「実施内容」参照）。将来パーサに表示名フィールドを追加する場合は本テーブルへの書き込み（`TimelineRepository.writeSegmentRow`）も合わせて更新が必要。
+- 日付決定は常に端末タイムゾーンにフォールバックする（4形式のいずれもタイムゾーンオフセット情報を共通中間モデルに保持していないため、実質的に「タイムゾーンオフセットがあれば使う」という条件分岐は発生しない）。将来`RawTrack`/`TimelineSegment`にタイムゾーン情報を追加する場合は本タスクの日付分割ロジック（`TimelineRepository.groupPointsByLocalDate`・`localDateOf`）の見直しが必要。
+- `segments`テーブルの再インポート時の冪等性は「インポート対象の日付集合に該当する既存行を削除してから挿入」という設計。同一日にまたがる複数回の部分インポート（例: 同じ日を含む別々のエクスポートファイルを続けて取り込む）では、後からインポートした側がその日の`segments`を完全に上書きする（マージはしない）。要件に明示的な仕様が無いため保守的な選択として実装したが、将来「複数ソースを同一日でマージしたい」要件が出た場合は見直しが必要。
+- SQLite書き込み自体の実測性能は上記の通り未計測（環境制約）。
+
+### コミット
+- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット予定。
+
+### 次回開始位置
+- T-006（地図上のルート表示＋期間指定）に着手する。`TimelineRepository.queryDays`/`querySegments`の出力（日単位の点列・セグメント）を使って地図描画・期間指定UIを実装する想定。`CleanedTrack.segmentRange`と同様、`days`テーブルの点列は「クリーニング済み・未簡略化」のため、描画前に`Simplifier.simplify`を呼ぶ配線が必要（T-004完了時の懸念点と同じく、呼び出し側の責務として残っている）。
+
 ## 2026-08-19 T-004b T-004レビュー指摘の修正（TrackCleanerの実距離判定をHaversineへ）
 
 ### 実施内容
