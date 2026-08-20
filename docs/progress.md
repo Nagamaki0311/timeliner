@@ -17,6 +17,36 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-008 アニメーションの動画書き出し
+
+### 実施内容
+- **スパイク検証（実装着手前、D-002懸念事項への回答）**: 実機/エミュレータが無い環境制約（D-003以来一貫）のため、Maven Centralから`androidx.media3:media3-transformer/media3-effect/media3-common:1.11.0`のaarを取得し`javap`でAPIシグネチャを確認した上、`github.com/androidx/media`（Media3本体）の実際のソースコード（`ImageAssetLoader.java`・`OverlayShaderProgram.java`・`BitmapOverlay.java`）を直接読み、静止画入力+`BitmapOverlay`が「毎フレーム更新されるオーバーレイ」として機能することを確認した（結論・根拠の詳細はdocs/decisions.md D-009）。懸念されていた「Transformerが同一フレームを最適化・重複排除する」事象は発生しない設計であることが判明したため、D-002の方式（静止画+BitmapOverlay）をそのまま採用し、代替方式への切り替えは行わなかった。
+- 依存追加: `gradle/libs.versions.toml`（`media3=1.11.0`、`androidx-media3-transformer`/`androidx-media3-effect`/`androidx-media3-common`）、`app/build.gradle.kts`（上記3つを`implementation`追加）。
+- `app/src/main/java/com/nagamaki0311/timeliner/render/RouteFrameRenderer.kt`: 公開関数`progressAtDataTime(timestampsMillis, dataTimeMillis): Float`を新設。旧`RouteOverlayView.currentProgress`内にあった「時刻→点インデックス位置」の二分探索＋線形補間ロジックをそのままここへ移設し、`RouteOverlayView.currentProgress()`はこの関数へ委譲するよう変更した（画面再生と動画書き出しの両方が同じ進捗計算を使う設計、D-008の「重複実装を解消する」方針を踏襲）。`Canvas`非依存の純Kotlin関数のためJVM単体テスト可能。
+- `app/src/main/java/com/nagamaki0311/timeliner/export/RouteBitmapOverlay.kt`（新規）: `androidx.media3.effect.BitmapOverlay`の実装。`getBitmap(presentationTimeUs)`で`presentationTimeUs`（マイクロ秒）→再生経過ミリ秒→`PlaybackTimeline.dataTimeAtPlaybackMillis`でデータ時刻→`RouteFrameRenderer.progressAtDataTime`で進捗、の順に変換し、`RouteFrameRenderer.draw`で透明背景のBitmap（1枚を使い回し、毎フレーム`eraseColor`でリセット）へルート線・マーカー・日時・地図帰属表示を描く。地図本体（下地）は描かず透明のまま返す設計（下地は`VideoExporter`が動画入力のMediaItemとして別途渡す地図スナップショットPNGがそのまま透けて見える。BitmapOverlayはGL側で下地の上にアルファ合成される）。
+- `app/src/main/java/com/nagamaki0311/timeliner/export/VideoExporter.kt`（新規）: 地図スナップショット取得（`MapLibreMap.snapshot`、カメラ位置は要求と同時に読む）→出力解像度決定（`computeOutputResolution`、短辺1080px上限・拡大なし・偶数丸め、D-002決定6）→ルート点列の簡略化（`Simplifier.simplify`、`RouteOverlayView`と同じepsilon算出方針）・画面座標変換（`ScreenProjection`、スナップショット解像度に応じてmetersPerPixelを縮小率で補正）→スナップショットPNGの一時ファイル書き出し→`MediaItem`（`setImageDurationMs`）+`EditedMediaItem`（`setFrameRate(30)`）+`OverlayEffect([RouteBitmapOverlay])`を`Composition`に組み立て`Transformer.start`→`ProgressHolder`のポーリング（200ms間隔、`delay`でUIをブロックしない）で進捗コールバック→完了/失敗/キャンセルの3系統をハンドリングする。`Transformer`の構築・start・進捗取得・cancelは呼び出し元のディスパッチャ（Main、Looper制約）上でそのまま行い、CPU処理（簡略化・座標変換・スナップショットのスケーリング・PNG書き込み）のみ`Dispatchers.Default`へ逃がす。失敗時は`ExportFailedException`を投げる。中間ファイル（スナップショットPNG）は`export`関数の`finally`で必ず削除し、書き込み先の`outputFile`自体の削除は呼び出し元の責務とする設計にした（作成者が後始末する、という責務分担）。
+- `app/src/main/java/com/nagamaki0311/timeliner/export/VideoOutput.kt`（新規）: `MediaStore.Video.Media`（`RELATIVE_PATH=Movies/timeliner`）への書き込み（`IS_PENDING`フラグで書き込み中を明示）と、共有（`ACTION_SEND`）・アプリで開く（`ACTION_VIEW`）用の`Intent`組み立て。minSdk 29前提のため`WRITE_EXTERNAL_STORAGE`権限・FileProviderは不要（タスク指示どおり）。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/ExportDialog.kt`（新規、Compose）: 目標再生時間の選択（`SpeedMode.AUTO_DURATION_OPTIONS_MILLIS`を再利用、10/30/60/120秒）→進捗表示（`LinearProgressIndicator`）→完了後の「共有」「アプリで開く」ボタン、失敗時のエラー表示、を`ExportUiState`（Idle/InProgress/Success/Error）に応じて1つの`AlertDialog`内で切り替える。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineViewModel.kt`: `ExportUiState`（sealed interface）と`exportState: StateFlow`を新設。`exportVideo(context, map, targetDurationMillis)`が現在選択中の期間のルート（`_routePoints.value`）から**常に自動速度モード**で新規`PlaybackTimeline`を構築し（画面再生中の速度モードとは独立、ExportDialogは目標再生時間のみを選ばせる設計のため）、`VideoExporter.export`→`VideoOutput.saveToMediaStore`まで`viewModelScope.launch`内で実行する。`cancelExport()`（`exportJob?.cancel()`）・`dismissExport()`（書き出し中は無視）も追加。中間ファイル（`outputFile`）は`finally`で必ず削除する（成功時はMediaStoreへコピー済みのため削除して問題ない、失敗・キャンセル時もこれで後始末される）。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`: `PlaybackControls`の下に「動画として保存」ボタン（地図・ルートが揃っている時のみ有効）を追加し、タップで`ExportDialog`を表示する導線を配線した。共有/開くボタンは`runCatching`で`Intent`起動失敗（対応アプリが無い等）を握りつぶしクラッシュしないようにした（AGENTS.md原則8）。
+
+### 実装上の判断・懸念点（保守的判断で進めた不明点、Auto Mode下）
+- `Bitmap.notifyPixelsChanged()`（当初D-002の想定どおり明示的にBitmapの変更をMedia3へ通知する想定だった）が現行SDK（`android-36`）の公開APIに存在しないことをコンパイルエラーで発見した。AOSP本体の`Bitmap.java`ソースを確認し、`getGenerationId()`のJavadoc「changes whenever the bitmap is modified」から、`Canvas`描画によるBitmap変更は自動的にgenerationIdへ反映される（明示通知は不要）ことを確認し、該当行を削除して対応した（D-009に検証根拠を記録）。
+- `EditedMediaItemSequence.Builder(EditedMediaItem...)`/`Builder(List<EditedMediaItem>)`はいずれもMedia3 1.11.0で`@Deprecated`（コンパイル時警告で発覚）だったため、非推奨でない`Builder(Set<Integer> trackTypes)`+`addItem(...)`（`trackTypes=setOf(C.TRACK_TYPE_VIDEO)`）へ変更した。
+- 動画書き出しは常に自動速度モード（`PlaybackTimeline.buildAuto`）を使う設計とした。タスク指示のExportDialogが「目標再生時間の選択」のみを求めており手動倍率モードの選択には触れていないため、画面再生側の現在の速度モード（手動の可能性もある）とは独立に、書き出し時は毎回新しい`PlaybackTimeline`を自動モードで構築する。手動速度での書き出しをユーザーが求める場合は将来の拡張としてバックログに追加が必要（明示の要求が無いため今回はスコープ外とした、YAGNI）。
+- `Transformer`の実際の動作（動画が正しくエンコードされるか、フレームごとにオーバーレイが更新されるか、MediaStoreへ正しく書き込まれるか）は実機/エミュレータでの目視確認ができておらず未実施（環境制約、D-003以来一貫）。D-009のソースコードレベルの検証がその代替。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（既存118件+新規`RouteFrameRendererTest`6件+`VideoExporterTest`5件の計129件すべてパス）。
+- `./gradlew assembleDebug`が成功（Media3依存追加後も問題なし）。
+- テストの制約（D-003と同種）: `VideoExporter.export`本体・`RouteBitmapOverlay`・`VideoOutput`・`ExportDialog`はいずれも`MapLibreMap`/`Transformer`/`MediaStore`/Compose UIといった実機依存APIに直接依存するためJVM単体テスト不可。Android API非依存の純Kotlinロジック（`RouteFrameRenderer.progressAtDataTime`、`VideoExporter.computeOutputResolution`）のみ単体テストを追加した（タスク指示どおり）。
+
+### 次回開始位置
+- T-009（仕上げ: エラー処理・a11y・性能確認・README）に着手する。T-008の実機確認未実施（D-009参照）を踏まえ、実機/エミュレータが利用可能になった時点で動画書き出しの目視確認（フレームごとのオーバーレイ更新、地図帰属表示の焼き込み、MediaStore登録後の再生・共有）を行うことが望ましい。
+
+### コミット
+- 本タスクの変更はコミット予定（Manager確認後）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。
+
 ## 2026-08-20 T-007b T-007レビュー指摘の修正（再生中シークの競合、trimByProgress二重計算）
 
 ### 実施内容

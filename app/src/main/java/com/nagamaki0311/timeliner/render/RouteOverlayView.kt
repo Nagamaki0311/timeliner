@@ -97,28 +97,12 @@ class RouteOverlayView @JvmOverloads constructor(
 
     /**
      * [playbackDataTimeMillis]（現在データ時刻）を、[cachedSimplifiedTimestamps]上での位置（0.0〜1.0）へ
-     * 二分探索＋線形補間で変換する。未設定時は全区間表示（1.0）。
+     * 変換する。未設定時は全区間表示（1.0）。実体は[RouteFrameRenderer.progressAtDataTime]（動画書き出し
+     * T-008とも共用する共通ロジック、D-008/T-008で重複実装を解消済み）。
      */
     private fun currentProgress(): Float {
         val dataTime = playbackDataTimeMillis ?: return 1f
-        val timestamps = cachedSimplifiedTimestamps
-        val pointCount = timestamps.size
-        if (pointCount <= 1) return 1f
-        if (dataTime <= timestamps[0]) return 0f
-        if (dataTime >= timestamps[pointCount - 1]) return 1f
-
-        val searchResult = timestamps.binarySearch(dataTime)
-        val exactIndex = if (searchResult >= 0) {
-            searchResult.toDouble()
-        } else {
-            val hi = (-searchResult - 1).coerceIn(1, pointCount - 1)
-            val lo = hi - 1
-            val tLo = timestamps[lo]
-            val tHi = timestamps[hi]
-            val fraction = if (tHi == tLo) 0.0 else (dataTime - tLo).toDouble() / (tHi - tLo).toDouble()
-            lo + fraction
-        }
-        return (exactIndex / (pointCount - 1)).toFloat().coerceIn(0f, 1f)
+        return RouteFrameRenderer.progressAtDataTime(cachedSimplifiedTimestamps, dataTime)
     }
 
     private fun recomputeAndInvalidate() {

@@ -3,6 +3,10 @@ package com.nagamaki0311.timeliner.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -10,8 +14,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nagamaki0311.timeliner.export.VideoOutput
 import com.nagamaki0311.timeliner.playback.PlaybackTimeFormat
 import com.nagamaki0311.timeliner.render.RouteOverlayView
 import org.maplibre.android.camera.CameraUpdateFactory
@@ -28,6 +35,8 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
     val period by viewModel.selectedPeriod.collectAsStateWithLifecycle()
     val route by viewModel.routePoints.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
+    val exportState by viewModel.exportState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var overlayView by remember { mutableStateOf<RouteOverlayView?>(null) }
@@ -35,6 +44,9 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
     // ドラッグ開始時点で再生中だったかを覚えておき、ドラッグ終了時に再生を再開する（一般的な動画プレーヤーのUX）。
     var isSeeking by remember { mutableStateOf(false) }
     var resumePlaybackAfterSeek by remember { mutableStateOf(false) }
+    // 動画書き出しダイアログ(docs/tasks.md T-008)の表示・非表示自体はUI側のローカル状態で管理し、
+    // 書き出し処理そのものの状態(ExportUiState)はViewModelが保持する（ImportScreenの確認ダイアログと同じ分離）。
+    var exportDialogVisible by remember { mutableStateOf(false) }
 
     Column(modifier = modifier.fillMaxSize()) {
         PeriodSelector(period = period, onPeriodChange = viewModel::selectPeriod)
@@ -71,6 +83,36 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
                 if (resumePlaybackAfterSeek) viewModel.play()
             },
             onSpeedModeChange = viewModel::setSpeedMode
+        )
+        Button(
+            onClick = { exportDialogVisible = true },
+            enabled = map != null && route != null,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+        ) {
+            Text("動画として保存")
+        }
+    }
+
+    if (exportDialogVisible) {
+        ExportDialog(
+            state = exportState,
+            onExport = { targetDurationMillis ->
+                val currentMap = map
+                if (currentMap != null) {
+                    viewModel.exportVideo(context, currentMap, targetDurationMillis)
+                }
+            },
+            onCancel = viewModel::cancelExport,
+            onDismiss = {
+                viewModel.dismissExport()
+                exportDialogVisible = false
+            },
+            onShare = { videoUri ->
+                runCatching { context.startActivity(VideoOutput.createShareIntent(videoUri)) }
+            },
+            onOpen = { videoUri ->
+                runCatching { context.startActivity(VideoOutput.createViewIntent(videoUri)) }
+            }
         )
     }
 

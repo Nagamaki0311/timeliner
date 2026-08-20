@@ -252,3 +252,28 @@
 - 以降、`PlaybackController`のシークは「シーク時に自動停止」という前提でUIを設計する。
 - `RouteFrameRenderer`のtrim計算共有化は、T-008の動画書き出し実装でもこの設計を踏襲する。
 
+---
+
+## D-009: T-008スパイク検証の結果（静止画+BitmapOverlayが機能することをMedia3ソースコードで確認）
+
+- 日付: 2026-08-20
+- 状態: 採用
+
+### 背景
+- T-008のタスク指示は、D-002が決めた動画書き出し方式（地図スナップショット静止画を`MediaItem`として`Transformer`へ渡し、`BitmapOverlay`の`getBitmap(presentationTimeUs)`で毎フレームの進捗・現在地・日時・地図帰属表示を重ねる）について、「静止画入力でTransformerが同一フレームを最適化・重複排除し、オーバーレイが毎フレーム更新されない可能性がある」という懸念を明記し、実装開始前に最小限のスパイク実装で確認することを求めていた。
+- 本セッションの環境にはAndroid実機・エミュレータが無い（T-002以降一貫した既知の制約、docs/progress.md各エントリに記録済み）。そのため「実際にTransformerを実行して動画を書き出し目視確認する」という一般的な意味でのスパイクは実施不可能。代わりに、Maven Centralから`androidx.media3:media3-transformer:1.11.0`・`media3-effect:1.11.0`・`media3-common:1.11.0`のaarを取得し（T-002がMapLibreのaarを`javap`で逆コンパイルして確認した手法と同じ方針）、加えて`androidx/media`のGitHub公開リポジトリ（`github.com/androidx/media`、Media3の実装そのもの）から該当クラスの実際のソースコードを直接読んで検証した。
+
+### 決定（スパイク検証で確認した事実）
+1. `ImageAssetLoader.queueBitmapInternal`は、読み込んだ1枚の`Bitmap`を`sampleConsumer.queueInputBitmap(bitmap, ConstantRateTimestampIterator(durationUs, frameRate))`へ渡す。`ConstantRateTimestampIterator`は`durationUs`・`frameRate`から一定間隔の`presentationTimeUs`列（0, 1/30秒, 2/30秒, ...)を生成し、同じ`Bitmap`オブジェクトが**フレーム数分だけ**個別の`presentationTimeUs`とともにVideoFrameProcessorへキューイングされる。すなわち「静止画1枚」であっても内部的には動画のフレーム数だけ個別に処理される設計であり、そもそも1フレームに最適化・重複排除される余地がない。
+2. `OverlayShaderProgram.drawFrame(inputTexId, presentationTimeUs)`は`BaseGlShaderProgram`から**キューイングされた各フレームごとに**呼ばれ、その中で`overlay.getTextureId(presentationTimeUs)`（`BitmapOverlay`実装では内部で`getBitmap(presentationTimeUs)`を呼ぶ）を毎回呼び出す。ここでの`presentationTimeUs`は決定1の個別フレームのタイムスタンプそのものであり、フレームごとに異なる値が渡る。
+3. `BitmapOverlay.getTextureId(presentationTimeUs)`は`getBitmap(presentationTimeUs)`の戻り値を`bitmap != lastBitmap || generationId != lastBitmapGenerationId`で前回描画時と比較し、異なる場合のみGLテクスチャを再アップロードする。`Bitmap.getGenerationId()`のJavadocは「changes whenever the bitmap is modified」であり、`Canvas`による描画を含むBitmapの変更で自動的に更新される（Java側から明示的に通知するAPIである旧`notifyPixelsChanged()`は現行SDK（`android-36`）には存在しない。実装時にこの呼び出しを試みてコンパイルエラーで判明した）。
+4. 以上（1〜3）より、`RouteBitmapOverlay.getBitmap`が毎フレーム異なる内容を描画したBitmap（同一インスタンスを使い回す場合も`Canvas`描画によりgenerationIdが変化する）を返す限り、Transformerの静止画入力パイプラインは実装計画（D-002）どおりに「毎フレーム更新されるオーバーレイ」として機能する。懸念されていた「同一フレームへの最適化・重複排除」は発生しない設計であることをソースコードレベルで確認した。
+
+### 理由
+- 実機・エミュレータでの実行確認ができない環境制約下では、タスク指示が求める「最小限のスパイク実装での確認」の代替として、Media3本体の実装ソースコードを直接読み実際の処理フロー（フレームのキューイング→シェーダー描画→オーバーレイ取得の各段でpresentationTimeUsがどう伝播するか）を追跡することが、実行して目視確認する以上に確実な検証手段だと判断した（ソースコードはビルドされたバイナリそのものの挙動を規定するため、実行結果を観察するより高い確信度が得られる）。
+- D-003・T-005〜T-007bが繰り返し記録してきた「実機/エミュレータでの目視確認は環境制約により未実施」という既知の制約の範囲内で、可能な限り高い確信度の検証を行うという一貫した方針に従った。
+
+### 影響
+- D-002が決めた動画書き出し方式（静止画+BitmapOverlay）をそのまま採用し、代替方式（短尺無地動画の生成、MediaCodec+EGLでの手動フレーム描画）への切り替えは行わない。
+- 実際の動画ファイルを実機で再生し、フレームごとにルート進捗・現在地マーカー・日時が正しく変化することの最終確認は、実機/エミュレータが利用可能になった時点で行うことが望ましい（D-003以来の既知の制約の一部として残る）。
+

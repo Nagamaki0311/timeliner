@@ -111,6 +111,36 @@ object RouteFrameRenderer {
         drawAttribution(canvas, style)
     }
 
+    /**
+     * [timestampsMillis]（時刻昇順、[draw]へ渡す`screenCoordinates`と対応する点列の時刻）上で
+     * [dataTimeMillis]が占める位置を、[draw]の`progress`引数（0.0〜1.0）へ変換する。
+     * 二分探索＋線形補間で「時刻→点インデックスの連続的な位置」を求める。
+     *
+     * 画面再生（[com.nagamaki0311.timeliner.render.RouteOverlayView]）と動画書き出し
+     * （[com.nagamaki0311.timeliner.export.RouteBitmapOverlay]、docs/tasks.md T-008）で共用する。
+     * `Canvas`に依存しない純Kotlin関数のため、[draw]自体とは異なりJVM単体テストで検証できる
+     * （旧`RouteOverlayView.currentProgress`にあった重複実装をこちらへ集約した）。
+     */
+    fun progressAtDataTime(timestampsMillis: LongArray, dataTimeMillis: Long): Float {
+        val pointCount = timestampsMillis.size
+        if (pointCount <= 1) return 1f
+        if (dataTimeMillis <= timestampsMillis[0]) return 0f
+        if (dataTimeMillis >= timestampsMillis[pointCount - 1]) return 1f
+
+        val searchResult = timestampsMillis.binarySearch(dataTimeMillis)
+        val exactIndex = if (searchResult >= 0) {
+            searchResult.toDouble()
+        } else {
+            val hi = (-searchResult - 1).coerceIn(1, pointCount - 1)
+            val lo = hi - 1
+            val tLo = timestampsMillis[lo]
+            val tHi = timestampsMillis[hi]
+            val fraction = if (tHi == tLo) 0.0 else (dataTimeMillis - tLo).toDouble() / (tHi - tLo).toDouble()
+            lo + fraction
+        }
+        return (exactIndex / (pointCount - 1)).toFloat().coerceIn(0f, 1f)
+    }
+
     /** [trimByProgress]で切り詰め済みの点列の末尾点を現在位置マーカーの画面座標として返す。点が無い場合はnull。 */
     private fun markerPosition(trimmedScreenCoordinates: FloatArray): ScreenPoint? {
         if (trimmedScreenCoordinates.size < 2) return null

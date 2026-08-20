@@ -6,20 +6,26 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.nagamaki0311.timeliner.data.ImportSource
+import com.nagamaki0311.timeliner.export.VideoExporter
+import com.nagamaki0311.timeliner.export.VideoOutput
 import com.nagamaki0311.timeliner.model.Period
 import com.nagamaki0311.timeliner.model.PeriodType
 import com.nagamaki0311.timeliner.playback.PlaybackController
+import com.nagamaki0311.timeliner.playback.PlaybackTimeline
 import com.nagamaki0311.timeliner.playback.SpeedMode
 import com.nagamaki0311.timeliner.store.PointBlobCodec
 import com.nagamaki0311.timeliner.store.TimelineDb
 import com.nagamaki0311.timeliner.store.TimelineRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.maplibre.android.maps.MapLibreMap
+import java.io.File
 import java.time.LocalDate
 
 /** [ImportScreen]が表示するインポート処理の状態。 */
@@ -35,6 +41,15 @@ sealed interface ImportUiState {
     data class ConfirmOverwrite(val overwriteDayCount: Int) : ImportUiState
     data class Success(val result: TimelineRepository.ImportResult) : ImportUiState
     data class Error(val message: String) : ImportUiState
+}
+
+/** [ExportDialog]が表示する動画書き出し処理の状態（docs/tasks.md T-008）。 */
+sealed interface ExportUiState {
+    /** 未着手、または[TimelineViewModel.dismissExport]でダイアログを閉じた後の状態。目標再生時間の選択はここで行う。 */
+    data object Idle : ExportUiState
+    data class InProgress(val progress: Float) : ExportUiState
+    data class Success(val videoUri: Uri) : ExportUiState
+    data class Error(val message: String) : ExportUiState
 }
 
 /**
@@ -60,6 +75,11 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private val playbackController = PlaybackController(viewModelScope)
     val playbackState: StateFlow<PlaybackController.State> = playbackController.state
 
+    /** 動画書き出しの状態管理（docs/tasks.md T-008）。 */
+    private val _exportState = MutableStateFlow<ExportUiState>(ExportUiState.Idle)
+    val exportState: StateFlow<ExportUiState> = _exportState.asStateFlow()
+    private var exportJob: Job? = null
+
     init {
         viewModelScope.launch { loadRoute(_selectedPeriod.value) }
     }
@@ -74,6 +94,64 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     fun pause() = playbackController.pause()
     fun seekTo(progress: Float) = playbackController.seekTo(progress)
     fun setSpeedMode(mode: SpeedMode) = playbackController.setSpeedMode(mode)
+
+    /**
+     * 選択期間のルートを、目標再生時間[targetDurationMillis]（[SpeedMode.AUTO_DURATION_OPTIONS_MILLIS]から選択、
+     * fps 30固定・音声トラックなし、D-002決定6）の動画として書き出す（docs/tasks.md T-008）。
+     * 画面再生の速度モード（[playbackState.value.speedMode]）とは独立に、常に自動速度モード
+     * （[PlaybackTimeline.buildAuto]）で書き出し用の写像を構築する（[ExportDialog]は目標再生時間のみを選ばせる設計のため）。
+     * 書き込み・変換はUIスレッドをブロックしない（[VideoExporter.export]内部でCPU処理を[Dispatchers.Default]へ逃がす）。
+     */
+    fun exportVideo(context: Context, map: MapLibreMap, targetDurationMillis: Long) {
+        val route = _routePoints.value
+        if (route == null) {
+            _exportState.value = ExportUiState.Error("書き出す期間にデータがありません")
+            return
+        }
+        val appContext = context.applicationContext
+        _exportState.value = ExportUiState.InProgress(0f)
+        exportJob = viewModelScope.launch {
+            val outputFile = File(appContext.cacheDir, "timeliner_export_${System.currentTimeMillis()}.mp4")
+            try {
+                val timeline = PlaybackTimeline.buildAuto(
+                    route.timestampsMillis, route.latitudes, route.longitudes, targetDurationMillis
+                )
+                VideoExporter(appContext).export(
+                    map = map,
+                    latitudes = route.latitudes,
+                    longitudes = route.longitudes,
+                    timestampsMillis = route.timestampsMillis,
+                    timeline = timeline,
+                    outputFile = outputFile,
+                    onProgress = { fraction -> _exportState.value = ExportUiState.InProgress(fraction) }
+                )
+                val videoUri = withContext(Dispatchers.IO) {
+                    VideoOutput.saveToMediaStore(appContext, outputFile, outputFile.name)
+                }
+                _exportState.value = ExportUiState.Success(videoUri)
+            } catch (e: CancellationException) {
+                _exportState.value = ExportUiState.Idle
+                throw e
+            } catch (e: Exception) {
+                _exportState.value = ExportUiState.Error(e.message ?: e::class.java.simpleName)
+            } finally {
+                outputFile.delete()
+            }
+        }
+    }
+
+    /** 書き出し中に[ExportDialog]の「キャンセル」から呼ばれる。中間ファイルは[exportVideo]のfinallyで削除される。 */
+    fun cancelExport() {
+        exportJob?.cancel()
+        exportJob = null
+    }
+
+    /** 書き出しダイアログを閉じる（書き出し中は無視、[ExportUiState.Idle]へ戻す）。 */
+    fun dismissExport() {
+        if (_exportState.value !is ExportUiState.InProgress) {
+            _exportState.value = ExportUiState.Idle
+        }
+    }
 
     /**
      * [period]に対応する`days`行をリポジトリから読み出し、日付昇順（＝時刻昇順）に結合して[_routePoints]へ反映する。

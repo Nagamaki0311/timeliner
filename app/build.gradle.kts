@@ -67,5 +67,8 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     implementation(libs.maplibre.android.sdk)
     implementation(libs.gson)
+    implementation(libs.androidx.media3.transformer)
+    implementation(libs.androidx.media3.effect)
+    implementation(libs.androidx.media3.common)
     testImplementation(libs.junit)
 }
