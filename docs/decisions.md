@@ -25,695 +25,304 @@
 
 ---
 
-## D-001: タスク管理をdocs配下のMarkdownファイルで一元管理する
+## D-001: project001テンプレートからtimelinerアプリリポジトリへ初期化する
 
-- 日付: 2026-08-03
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- 長期開発を前提としたAI開発環境として、タスクの状態・作業履歴・設計判断をセッションを跨いで引き継げる仕組みが必要だった。
+- 本リポジトリ（Nagamaki0311/timeliner）はproject001テンプレートから作成されたが、README.mdの「新規プロジェクトでの初期化」手順（docs/tasks.md・docs/progress.md・docs/decisions.md・README.mdのリセット）が未実施のままだった。
+- project001自体の運用ルール（README.md）は「個別アプリの実装は、このテンプレートから作成した別リポジトリで行う。project001自体には追加しない」と明記しているが、本リポジトリ名（timeliner）とタスクで依頼された内容（Androidタイムライン可視化アプリ「timeliner」の新規開発）が一致しており、本リポジトリがその「別リポジトリ」に相当することが明らかだった。
 
 ### 決定
-- `docs/tasks.md`（タスク管理）、`docs/progress.md`（作業履歴）、`docs/decisions.md`（設計判断）の3ファイルに役割を分離して記録する。
-- `CLAUDE.md` からこれらを参照するルールを明記し、開発フロー（計画・実装・レビュー）の各段階で参照/更新することを必須とする。
+- README.mdの初期化手順に従い、docs/tasks.md（T-001〜T-024行・バックログを削除、表構造は維持）、docs/progress.md・docs/decisions.md（「## 記録フォーマット」直後の区切り線より下を削除）、README.md（プロジェクト名・概要をtimelinerアプリ向けに書き換え、初期化手順の節を削除）をリセットした。
+- AGENTS.md・CLAUDE.md・REVIEW.md・.claude/配下（Agent定義・Hook・bootstrap.sh）・docs/agents.md等の運用ルールは変更しない。これらは開発プロセス自体の定義であり、以降のAndroidアプリ開発でもそのまま適用する。
 
 ### 理由
-- 単一ファイルに全情報を詰め込むと肥大化し、目的別の検索性が落ちるため、関心事ごとに分離した。
-- 外部のIssue管理ツールを使わず、リポジトリ内のMarkdownで完結させることで、AIエージェントが直接読み書きできるようにした。
+- ユーザーへの追加確認より、リポジトリ名とタスク内容の一致という一次情報から意図が十分に読み取れると判断した（Auto Mode方針）。
+- project001自身の構築履歴（T-001〜T-024等）をtimelinerのdocs/に残すと、今後のタスク管理・SessionStart Hookの表示がテンプレート開発の文脈と混在し、走査性・トークン効率の両面で不利益が大きい。
 
 ### 影響
-- 今後のタスク着手時は `tasks.md` の確認・更新が前提となる。
-- 作業完了時は `progress.md` への追記が必須となる。
-- 設計判断が発生した場合は、都度 `decisions.md` に追記する運用とする。
+- 今後のタスク管理（T-001〜）はtimelinerアプリの開発に関するもののみをdocs/tasks.mdへ記録する。
+- project001テンプレート自体の設計判断（D-001〜D-023、リセット前のdocs/decisions.md）は本リポジトリのgit履歴（このコミット以前）から参照可能だが、以降のdocs/decisions.mdには複製しない。
 
 ---
 
-## D-002: project001を個別アプリ開発から共通AI開発エージェント用テンプレートへ転換する
+## D-002: timelinerアプリの技術選定と、Plannerが提示した要確認事項への回答
 
-- 日付: 2026-08-02
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- project001を特定アプリの開発リポジトリとして運用していたが、今後は新規プロジェクトを立ち上げるたびに同じ開発ルール・ドキュメント運用の仕組みを再構築する必要が出てくることが見込まれた。
-- 個別アプリの仕様やコードとテンプレートとしての基盤ルールが混在すると、テンプレートとしての再利用性が下がる。
+- Plannerがタイムライン可視化アプリの実装計画を作成した。地図ライブラリ・動画書き出し方式・JSON対応形式・永続化方式・再生速度モデル等の技術選定に加え、7件の要確認事項が提示された。Auto Mode方針（ユーザーが不在でも合理的な判断で進める）に従い、Managerが即答できるものはここで決定し実装を進める。
 
-### 決定
-- project001の役割を「共通AI開発エージェント用テンプレートリポジトリ」と定義する。
-- 個別アプリケーションの仕様・実装コードはこのリポジトリに保持しない。
-- 新規プロジェクト作成時は、本リポジトリ（CLAUDE.md + docs/配下の3ファイル）を雛形としてコピーして初期状態とする。
-- planner/developer/reviewerによる開発ループ、および `docs/tasks.md` / `docs/progress.md` / `docs/decisions.md` の運用ルールはそのまま維持する。
-- あわせて、CLAUDE.mdに「トークン効率化ルール」を新設し、サブエージェントへの調査委任、実装前の方針確認、タスク切替時のコンテキストリセットなど、コンテキストを小さく保つための運用ルールを明記する。
+### 決定（技術選定、Plannerの推奨をそのまま採用）
+- 言語/UI: Kotlin + Jetpack Compose（地図は`AndroidView`でラップ）。状態管理はViewModel + StateFlow、DIライブラリは導入しない。
+- 地図: MapLibre Native Android + OpenFreeMapのベクタータイル（APIキー不要、osmdroidは保守停止のため不採用、Google Maps SDKは動画書き出し要件と利用規約が衝突するため不採用）。回転・チルトは無効化する。
+- JSON: `android.util.JsonReader`によるストリーミングパースで4形式（端末内Timeline Android/iOS、Takeout Semantic Location History、Takeout Records）を吸収し、共通中間モデルへ正規化する。Kotlinx Serialization/Moshi等の追加依存は導入しない。
+- ノイズ除去・簡略化: 正規化→速度スパイク除去→停留ジッタ抑制→時間ガード付きDouglas-Peucker（明示スタック実装）→長期間欠損の分断、の4〜5段パイプライン。
+- 永続化: Room等は使わず素の`SQLiteOpenHelper`、1日1行のBLOB格納。
+- 動画書き出し: AndroidX Media3 Transformer（`BitmapOverlay`で地図スナップショット静止画に毎フレームの進捗・現在地・日時を重ねる）。手動MediaCodec+EGL実装は行わない。
+- minSdk 29（Android 10）。ストレージ権限分岐（API 28以下向け`WRITE_EXTERNAL_STORAGE`）を実装しない。
+- 再生速度: データ時刻↔再生時刻の単調写像を画面再生・動画書き出しで共有する。既定は関心度（滞在は圧縮、移動は自然速度）に基づく自動モード、手動固定倍率モードも用意する。
+
+### 決定（要確認事項への回答）
+1. パッケージ名: `com.nagamaki0311.timeliner`とする。
+2. 実データサンプル: 本セッションではユーザーへ個人の位置情報ファイルの提供を求めない（機微データであり、Auto Mode下で要求を待つと停止するため）。公開されている形式ドキュメント（locationhistoryformat.com等）に基づく合成フィクスチャでパーサを検証し、未知キー無視・セグメント単位の部分失敗許容という防御的設計でスキーマ差分に備える。実データでの検証はREADMEに既知の制約として明記し、docs/tasks.mdのバックログに残す。
+3. 自動再生速度の既定挙動: Plannerの非線形圧縮（滞在・夜間を圧縮し移動を自然速度に近づける）を既定とする。要件「冗長にならない推奨再生速度」に最も直接的に応える設計であるため。手動固定倍率モードも併設し、ユーザーが希望すれど厳密な等倍速も選べるようにする。
+4. 地図のオフライン動作: 必須としない。要件の「端末内で完結」は位置情報データ自体の取り扱い（外部サーバーへアップロードしない）についての要件と解釈し、地図タイルの表示は既存の要件（実際の地理情報の利用、重量級ライブラリ回避）を踏まえてネットワーク経由のベクタータイルとする。
+5. minSdk 29で確定する。
+6. 動画の既定仕様: 固定のアスペクト比を決め打ちせず、書き出し時点で画面に表示されている地図ビューのアスペクト比をそのまま使う（短辺1080pxを上限に解像度を決定）。プレビューと書き出し結果の見た目を一致させる設計方針（RouteFrameRendererの共通化）と整合する。fpsは30、既定の目標再生時間は30秒（10/30/60/120秒から選択可）、音声トラックなし。
+7. Records.json（生GPS）・`rawSignals`への対応: v1のスコープ外とする。YAGNI（判定ラダー1）に従い、まず主要形式（セマンティックタイムライン系）で完了条件を満たすことを優先する。将来必要になった時点でdocs/tasks.mdのバックログへ追加する。
 
 ### 理由
-- 開発ルール・ドキュメント運用の仕組みは汎用性が高く、個別アプリの実装から切り離すことで、新規プロジェクトの立ち上げコストを下げられる。
-- 既存の開発フロー（planner/developer/reviewer）とドキュメント運用（tasks/progress/decisions）は、アプリの種類に依存しない仕組みであるため、そのまま基盤として流用できる。
-- トークン効率化ルールは、外部記事（Claude Codeのトークン節約に関する運用術）の知見を踏まえ、テンプレートとして今後利用されるすべてのプロジェクトに恩恵があるため、この段階で組み込むことにした。
+- いずれも実装の細部であり、仕様の大枠（要件定義書）を変更するものではないため、Auto Mode方針に沿ってManagerが判断して進める方が、確認待ちで開発を止めるより合理的と判断した。
+- 判断の根拠は各項目に明記し、後で誤りが判明した場合に該当個所だけを見直せるようにした。
 
 ### 影響
-- 今後、本リポジトリに個別アプリの仕様やコードを追加する作業は行わない。
-- 新規プロジェクトを開始する際は、本リポジトリをコピーして雛形として利用する運用に変わる。
-- 既存の開発フロー・完了条件・ドキュメント運用ルールには変更がないため、運用面での移行コストは小さい。
+- 以降のdeveloperタスクは本D-002の決定を前提に実装する。
+- 実データ未検証（項目2）は既知のリスクとして残る。ユーザーが実データでの検証を望む場合、後日サンプル提供を受けて追加のdeveloper/reviewerサイクルを回す。
 
 ---
 
-## D-003: ponytail（DietrichGebert/ponytail）のコード品質ルールをCLAUDE.mdへ統合する
+## D-003: `android.util.JsonReader`はプレーンなJVM単体テスト（`app/src/test`）から実行できない（実測確認）
 
-- 日付: 2026-08-03
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail)（MIT License）は、AIコーディングエージェント向けに「不要なコードを書かせない」ための判断ラダーとルールセットを提供するプロジェクトである。
-- project001は共通AI開発エージェント用テンプレート（D-002）であり、developer/reviewerが実装・レビュー時に従うコード品質の基準がこれまで明文化されていなかった。
+- T-003のタスク指示には「`JsonReader`を使う走査部分はAndroid API依存のためJVM単体テストの対象外でよい（Robolectric等の追加依存は導入しない）」という記述と、「`TimelineJsonParserTest.kt`...`JsonReader`はJVM単体テストから直接使えるので実際にパーサを通してテストできる」という記述が併記されており、内容が矛盾していた。
+- 実装前に最小の再現テスト（`JsonReader(StringReader(...))`で単純なJSONを読むだけのテスト）を`./gradlew testDebugUnitTest`で実行して確認したところ、`java.lang.RuntimeException: Method beginObject in android.util.JsonReader not mocked.`で失敗した。これはAGP（Android Gradle Plugin）がローカル単体テスト用に生成する「モック化android.jar」が、`isReturnDefaultValues`未設定（既定のfalse）の場合、android.*のAPI呼び出しをすべて例外送出に置き換えるという既知の仕組みによるもので、対象クラスの実装が純粋なJavaコードであるか（`android.util.JsonReader`自体はネイティブ依存のない自己完結したクラス）どうかに関わらず一律に適用される。Robolectric（対象クラスを実装ごと差し替えるフレームワーク）以外にこれを回避する設定オプションは存在しない。
 
 ### 決定
-- ponytailが提供する `AGENTS.md` のルール（実装前の7段階判断ラダー、削除優先・抽象化最小化などの原則、入力検証やセキュリティ等で手を抜かない対象、`ponytail:` コメントによる意図的な簡略化の明示）を日本語化し、CLAUDE.mdに「コード品質ルール（Ponytail）」として統合する。
-- Claude Codeのプラグインマーケットプレイス経由（`/plugin marketplace add` 等）でのインストールは行わない。対話型CLIコマンドでありエージェントから実行できないため、ルール本文をCLAUDE.mdに直接組み込む方式を採用した。
-- 導入範囲はproject001リポジトリ自体とする。テンプレートの一部となるため、今後本リポジトリを雛形としてコピーする新規プロジェクトにも自動的に引き継がれる。
-- ponytailの `skills/` `commands/` `hooks/` 等のディレクトリ一式はコピーしない。ルール文書の統合のみを行う。
+- `TimelineJsonParser.kt`本体（4形式のルート判別・セグメント/E7/geo:/度記号パースの分岐ロジック）は、指示通り`android.util.JsonReader`によるストリーミング実装のまま維持する（実機・実際のアプリ実行では正しく動作する。Robolectricは導入しない）。
+- JVM単体テスト（`app/src/test`）では、`android.util.JsonReader`に依存しない部分のみを検証する: 純Kotlinの`CoordinateParsing.kt`・`TimestampParsing.kt`（座標・時刻パース）と、`TimelineJsonParser.kt`内の`isTargetZipEntry`（zipエントリのパス判定、純Kotlin文字列処理）。
+- `TimelineJsonParserTest.kt`は作成するが、上記の制約をコメントで明記した上で`isTargetZipEntry`のみを検証する内容とする。4形式（A〜D）の合成JSONを実際に`TimelineJsonParser.parseJson`へ通して点数・座標・時刻を検証する自動テストは、この制約により今回追加できていない。
 
 ### 理由
-- project001は「開発ルールの提供」がリポジトリの目的（Project Role参照）であり、実装フェーズの品質基準としてponytailの思想は既存の開発フロー（planner/developer/reviewer）や完了条件と矛盾しない。
-- プラグイン形式でのインストールは対話操作が必須でありエージェントセッションから完結できないため、CLAUDE.mdへのルール統合という確実な方法を選んだ。
-- skills/commands等のインフラ一式を持ち込むと、テンプレートの複雑性が増し「トークン効率化ルール」（CLAUDE.mdを簡潔に保つ）と矛盾するため、ルール本文の統合のみに留めた。
+- 判定ラダー3（標準ライブラリ・既存の成熟した外部ライブラリで足りるか）に照らすと、`android.util.JsonReader`は本番動作としては標準ライブラリで十分足りており、問題はテストツール側の制約でしかない。この制約を回避するためだけに独自のJSON字句解析器を再実装する案も検討したが、本番実装（`android.util.JsonReader`）とテスト専用実装という2つの独立したJSONパーサを維持することになり、挙動の乖離リスクと保守コストが利益を上回ると判断し却下した（AGENTS.md「責務は分離するがファイルは増やさない」「投機的な抽象化は追加しない」に反する）。
+- Robolectric導入はタスク指示で明示的に禁止されている。
 
 ### 影響
-- developer/reviewerは今後、実装前に判断ラダーを適用し、レビュー時にもこの基準を確認する。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、このコード品質ルールが引き継がれる。
-- `/ponytail-review` 等のponytail提供コマンドは未導入のため、必要になった場合は別途検討する。
+- 4形式（端末内Timeline Android/iOS、Takeout Semantic Location History、Takeout Records）それぞれのパース分岐ロジックの正しさは、コードレビューによる確認と手動でのフィクスチャ照合に留まり、自動テストによる継続的な保証がない状態が残る（D-002項目2の「実データ未検証」とは別の、テスト自動化に関する既知のリスクとして追加で記録する）。
+- 将来、実機/エミュレータが利用可能になった場合はandroidTest（instrumented test）としてこの部分を検証することが望ましい。Robolectric導入の是非を再検討する場合は、その時点で改めてユーザー確認を取ること。
+- 本Dは後継のD-004により対応方針が更新された（このDの背景・経緯自体は削除しない）。
 
 ---
 
-## D-004: Manager導入とドキュメント/Agent構成をAI開発OSとして整理する
+## D-004: T-003レビュー指摘への対応方針（Gson JsonReaderへの切替、null耐性、Records.jsonの位置づけ）
 
-- 日付: 2026-08-03
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- project001はテンプレートとして長期・複数Agent運用を前提とするが、これまで「誰がタスク状態を管理し、いつ完了と判断するか」が曖昧だった（User→Planner→Developer→Reviewerの間に調整役が不在）。
-- CLAUDE.mdは毎セッション自動でロードされるにもかかわらず、D-003で追加したPonytail全文（約80行）を含め273行まで肥大化しており、見出しの`\#`エスケープや行ごとの余分な空行で更に水増しされていた。トークン効率化ルール自体が形骸化していた。
-- docsをagents.md等へ拡張する提案があったが、ファイル数を増やすこと自体が目的ではない。
+- ReviewerによるT-003の敵対的レビューで3件の問題が確認された。(1) High/CONFIRMED: `parseZip`がzipエントリ順（時系列と一致しない）で点を単純追記するのみで、時刻ソート・複数データ源の統合方針が無い。典型的なTakeoutエクスポートは`Records.json`（生GPS）と`Semantic Location History/`（Googleが導出した代表点）を同一zipに同梱するため、由来の異なる点が無区別に混在しうる。(2) High/CONFIRMED: `next*()`呼び出し前に`JsonToken.NULL`を判定する処理が一切なく、1フィールドの明示的`null`が`IllegalStateException`としてファイル全体（zipなら以降の全エントリも含む）のパース失敗に伝播する。D-002が明記した「セグメント単位の部分失敗許容」という設計方針に反する。(3) Medium/CONFIRMED: D-002項目7は「Records.json(生GPS)はv1スコープ外」と決定していたが、Manager（このセッション）がT-003のタスク指示を書く際に形式D（Records.json）を対象に含めてしまい、実装・テストも完了済みという状態になっていた。docs/tasks.mdのバックログには矛盾して「未着手」の行が残っていた。
+- 加えてD-003で「解消不能」としていた自動テストの欠如について、Reviewerが独立に検証し、`android.util.JsonReader`と`com.google.gson.stream.JsonReader`が呼び出しているAPI（メソッド・JsonToken列挙値）が完全に一致すること（前者は後者を直接フォークしたクラス）、Gson本体に実行時の追加依存が無いこと（単一jar約290KB）を確認した。import差し替えのみで本番と同一コードをプレーンなJVM単体テストから実行できる。
 
 ### 決定
-- **Manager導入**: `.claude/agents/manager.md`という独立ファイルは作らず、Managerを「このセッション（ルート会話）自身の役割」としてCLAUDE.mdに定義する。責務はタスク管理・Agent割当・優先順位判断・レビュー依頼・完了判定のみとし、コードは直接書かない。
-- **開発フロー変更**: User → Manager → Planner → Developer → Reviewer → Manager → Complete。修正ループ（Reviewer検出時はManager経由でDeveloperへ差し戻し）もこのフローに統合。
-- **CLAUDE.mdの縮小**: `\#`エスケープと冗長な空行を除去し、Ponytail原則の全文（D-003でCLAUDE.mdに置いていたもの）をdocs/agents.mdへ移設。CLAUDE.mdにはAgent一覧・フロー・参照先のみを残す（273行→約45行）。
-- **docs/agents.mdを新設**: Agent構成表、オーケストレーションルール（Manager以外は互いを起動しない等）、Ponytail原則、不採用としたAgent（research/UI）の理由を1ファイルに集約する。architecture.md/project-map.md/known-issues.md/changelog.mdは作成しない。
-- **developer.md/reviewer.mdを微修正**: Ponytail原則の参照先をdocs/agents.mdに統一し、reviewerには過剰実装チェックの観点を1行追加。planner.mdは役割に変更がないため無変更。
-- **Hookは未実装**: セッション開始時にtasks.md/progress.mdを自動表示するSessionStart Hookを将来の検討事項としてdocs/agents.mdに記録するに留め、今回は追加しない。
-
-### 理由（検討した代替案）
-- **Managerを独立subagentにする案は不採用**: Claude Code公式の推奨構成は「ルートセッションがオーケストレーターとして専門subagentに委任する」形であり、subagentが他のsubagentを起動する構成は非公式かつ、tools設定・コンテキスト分離の面で不安定になりやすい。またManagerをsubagent化すると毎回コールドスタートし、会話の文脈（タスク履歴）を失うため、長期運用・トークン効率の両方に反する。ルート会話をManagerとすることで、「Managerだけが起動する」制約が構造的に（技術的に）保証される。
-- **research Agentは不採用**: planner.mdのtools（Read/Glob/Grep/WebFetch/WebSearch）が既に現状分析・外部調査を兼ねており、分離すると役割が重複する。
-- **UI Agentは不採用**: project001自体にアプリケーションコードがなく、UIレビュー対象が存在しない。必要になるのは個別アプリ側のリポジトリであり、テンプレート側で先取りして追加するのはYAGNIに反する。
-- **architecture.md/project-map.md/known-issues.md/changelog.mdは不採用**: architecture.mdやproject-map.mdはアプリ固有の構造を記述するものでproject001自体には対象がなく、空のボイラープレートになる。known-issues.mdはtasks.mdの「レビュー中」状態と、changelog.mdはprogress.mdの作業履歴と役割が重複するため、既存ファイルに統合し新設しない。
-- **Hookは提案のみに留めた**: SessionStart Hookは有用だが、設定ファイル(.claude/settings.json)への変更は実行環境に影響するため、必要性が具体的に確認できるまでは追加しない。
-
-### 影響
-- 今後、CLAUDE.mdを読むだけでAgent一覧とフローが把握でき、Ponytail原則の詳細やAgent構成の背景はdocs/agents.mdを開いた時だけコストが発生する（毎セッションのトークン消費を削減）。
-- develop/reviewerはPonytail原則を単一ファイル（docs/agents.md）からのみ参照するため、今後ponytail側の更新を反映する際も更新箇所が1箇所で済む。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、この構成（Manager運用・docs/agents.md）が引き継がれる。
-- D-003で「CLAUDE.mdに統合」と決定したPonytail原則の格納場所は、本決定によりdocs/agents.mdへ変更された（D-003の決定自体は履歴として維持し、上書きしない）。
-
----
-
-## D-005: SessionStart/PreCompact HookをPonytail方式で実装する
-
-- 日付: 2026-08-03
-- 状態: 採用
-
-### 背景
-- D-004で「SessionStart Hookは有用だが確定的な必要性がないため未実装」としていたが、大規模なClaude Code構成リポジトリ（affaan-m/ECC）の実運用調査により、同種のHook（セッション開始時の状態表示、コンテキスト圧縮前の状態保存）が長期運用で有効であることが裏付けられた。
-- project001はCLAUDE.mdの運用ルールで「セッション開始時にdocs/progress.md・docs/tasks.mdを確認する」を求めているが、これまで手動確認に依存しており、確認漏れのリスクがあった。
-
-### 決定
-- `.claude/settings.json`を新設し、以下2つのHookを追加する。
-  - **SessionStart**: `docs/tasks.md`のタスク一覧テーブルと`docs/progress.md`の最新エントリを表示する。
-  - **PreCompact**: コンテキスト圧縮前にdocs/progress.md・docs/tasks.mdへの記録を促すリマインダーを表示する。
-- 実装はPonytailの判定ラダーに従い、以下を確認した上で採用した。
-  1. 必要性: ECCでの実運用による裏付けあり（YAGNIを満たす）。
-  2. 既存コードでの代替: なし（初導入）。
-  3. 標準ライブラリ: grep/awk/echoという標準shellコマンドのみで実現可能と判断。
-  4. ネイティブ機能: Claude Code純正のHook機構（SessionStart/PreCompact）をそのまま利用。
-  5. 既存依存関係: 新規依存関係なし。
-  6. 1行で書けるか: 両Hookとも`command`フィールド1行（複数コマンドを`;`で連結）で完結させ、専用スクリプトファイルは追加しなかった。
-- update-configスキルの手順（既存設定の確認→スキーマ確認→pipe-testによる動作確認→jqによるJSON検証）に従って追加した。
-
-### 理由（検討した代替案）
-- **専用スクリプトファイル（`.claude/hooks/*.sh`）は不採用**: 各Hookの処理はgrep/awk 1個ずつの単純な抽出であり、JSON文字列内に直接書いても可読性を大きく損なわない（ダブルクォートを使わずシングルクォートと`[|]`のブラケット表現でエスケープ地獄を回避した）。ファイルを増やすとD-004の「ファイル数を最小限にする」方針と矛盾する。
-- **PreCompactでの自動記録（progress.mdへの自動追記）は不採用**: 圧縮前に何を記録すべきかはLLMの判断が必要であり、shellだけでは意味のある要約を生成できない。無理に自動化すると不正確な記録が残るリスクの方が大きいため、人間（Manager）へのリマインダー表示に留めた。
-- **PreToolUse/PostToolUse（lint・ビルド連携等）は不採用**: project001自体にアプリケーションコードがなく対象が存在しない。個別アプリのリポジトリ側で必要になった場合はそちらで追加する（docs/agents.md参照）。
-
-### 影響
-- セッション開始時の状態確認がHookにより自動化され、「確認し忘れ」による手戻りリスクが下がる。
-- `.claude/settings.json`は新規ファイルで、`.claude/`の監視対象が変わるため、初回のみ`/hooks`を開くかセッション再起動でHookが有効化される（Claude Code側の既知の挙動）。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、このHook構成が引き継がれる。
-- docs/agents.mdの「将来の検討事項（未実装）」は本決定により解消され、「Hook構成」として実装済みの内容に置き換えた。
-
----
-
-## D-006: 全体レビュー（重複排除・Hook環境検証・Manager-Hook接続の明文化）
-
-- 日付: 2026-08-03
-- 状態: 採用
-
-### 背景
-- project001をAI開発OSとして完成度を高めるため、CLAUDE.md/Agent設計/Hook設計/docs構成/Ponytail適用/トークン効率をユーザー指示に沿って一つずつ再レビューした。
-- レビュー中に、CLAUDE.mdのPlanner/Developer/Reviewer各1行説明が、(a) docs/agents.mdのAgent構成表、(b) 各`.claude/agents/*.md`自身のfrontmatter descriptionと三重に重複していることが判明した。これはCLAUDE.md自身に書いた「同じ情報を複数箇所に保存しない」というトークン効率化ルールに反する具体的な違反であり、根本原因（docs/agents.md新設時にCLAUDE.md側の対応する記述を削除し忘れたこと）に対処する必要があった。
-- ユーザーから、このセッション（Claude Code on the web）で`/hooks`コマンドが利用できないという報告があり、D-005で導入したHookが実際に機能する環境かどうかの確認が必要になった。
-
-### 決定
-- **CLAUDE.mdの重複除去**: Planner/Developer/Reviewerの個別1行説明を削除し、「Agent構成の詳細はdocs/agents.mdを参照」という参照のみに一本化した。Manager自身の責務（コードを書かない等）は、CLAUDE.md＝ルートセッション自身の指示という性質上、参照ではなくこのファイルに残す（自己参照的な行動制約のため）。
-- **Manager-Hook接続の明文化**: docs/agents.mdに、SessionStart/PreCompact Hookの出力は常にManager（ルートセッション）のコンテキストにのみ注入され、subagent化されたPlanner/Developer/Reviewerには届かないことを明記した。これはD-004でManagerを独立subagentにしなかった判断を補強する2つ目の技術的根拠である。
-- **PreCompactの発火タイミングの訂正**: PreCompact Hookは「Reviewerの後」等の固定ステップではなく、コンテキストサイズに応じて任意のタイミングで発火するイベントであることを明記した（ユーザー提案の直列フロー図をそのまま採用せず、より正確な表現に修正した）。
-- **Hook環境依存性の文書化**: `session-start-hook`スキルの情報をもとに、`/hooks`コマンドの不在はUIコマンドの制約であり、Hook実行機構自体（`.claude/settings.json`）はリモート環境（`$CLAUDE_CODE_REMOTE`）でも動作することをdocs/agents.mdに明記した。新規セッションでは自動的に有効化され、既存settings.jsonがない状態で開始した実行中セッションのみ再読み込みが必要という区別を明確化した。
-- **CLAUDE.mdへ/compact運用の1文を追加**: 「長時間セッションでは能動的に/compactを使い、PreCompact Hookの案内に従って圧縮前にdocsへ記録する」という運用ルールを追記し、既存のHookと既存のトークン効率化ルールを実際の運用としてつなげた。
-- **Agent構成・Hook構成・docs構成は変更なし**: Planner/Developer/Reviewerの3Agent構成、SessionStart/PreCompact 2Hook構成、tasks/progress/decisions/agentsの4docs構成は、いずれも再検証の結果、現状維持が最適と判断した（詳細は理由を参照）。
-
-### 理由（検討した代替案）
-- **Manager Agentの独立subagent化は再度不採用**: 今回新たに「Hook出力がsubagentには届かない」という技術的根拠が加わり、D-004の判断がより強く裏付けられた。
-- **Stop Hookの追加は不採用**: 応答終了ごとに発火するため、docs更新を促すリマインダーとしては頻度が高すぎ、毎ターンのトークン消費の方が確認漏れ防止のメリットを上回ると判断した。
-- **PostToolUse（lint/ビルド連携）は不採用**: project001自体にアプリケーションコードがなく対象が存在しない（D-005から変更なし）。
-- **architecture.md/project-map.md/known-issues.md/changelog.mdの追加は再度不採用**: D-004の判断（対象の不在、既存ファイルとの役割重複）から状況の変化がないため据え置いた。
-- **progress.mdの分割（アーカイブ化）は今回は不採用**: 現時点でファイルサイズは小さく、必要性が確認できないため実施を見送った。将来ファイルが肥大化した場合の選択肢として認識はしている（docs/tasks.mdのメモ参照）。
-
-### 影響
-- CLAUDE.mdはさらに簡潔になり、Agent情報の更新はdocs/agents.mdの1箇所で完結するようになった（今後同種の重複が再発しにくい）。
-- Hookの環境依存性が文書化されたことで、他の実行環境（CLI/IDE拡張等）でproject001を使う場合の期待値のズレを防げる。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、今回の修正が引き継がれる。
-
----
-
-## D-007: Agent別モデル最適化（Model Routing）を導入する
-
-- 日付: 2026-08-03
-- 状態: 採用
-
-### 背景
-- Planner/Developer/Reviewerは全て`model: inherit`のままであり、Managerのセッションモデルにそのまま追従していた。Managerが何のモデルで対話しているかによってPlanner等の品質・コストが意図せず変動しうる状態だった。
-- 常に最高性能モデルを使うのではなく、役割ごとに必要十分なモデルを割り当てることで、品質を維持しながらコスト・速度を最適化したいという要望があった。
-
-### 決定
-- `inherit`をやめ、Agentごとに`model`を固定する。
-  - Planner: `opus`（設計品質を最優先。安易な軽量化はしない）
-  - Developer: `sonnet`（コーディング用途の標準モデル。品質優先だが常時opusは不要）
-  - Reviewer: `sonnet`（既定はコード品質・セキュリティレビューを想定し下げすぎない）
-  - Manager: 変更なし（ルートセッション自身のモデルをそのまま使用。`.claude/settings.json`での上書きは行わない）
-- Markdown/README/docsの体裁確認など軽量なレビューについては、専用の軽量Agentを新設せず、ManagerがReviewerを起動する際にAgent呼び出しの`model`パラメータで`haiku`等へ一時的に上書きする運用とする。reviewer.md自体（既定モデル）は変更しない。
-
-### 理由（検討した代替案とPonytail判定ラダーの適用）
-- **Managerのモデルを`.claude/settings.json`で強制する案は不採用**: ルートセッションはUser自身が選んだ対話モデルであり、project001が上書きすると、このリポジトリでの作業全体（Manager業務に限らない、Userとの雑談的なやり取りも含む）に影響する。Managerの業務内容（判断・割当・状態管理）自体は既存の推論力で十分であり、上書きの必要性が確認できないため見送った。
-- **軽量レビュー専用Agent（例: docs-reviewer）の新設は不採用**: Ponytailの判定ラダー（3〜4段目: 標準ライブラリ／ネイティブ機能で足りるか）を適用すると、Claude Code側に既に「Agent呼び出し時のmodelパラメータ上書き」という機能があり、これで要件を満たせる。新規Agentファイルを追加すると、Reviewerとの役割重複（レビューという同じ機能を担うAgentが2つになる）を招くため、既存機能の活用を優先した。
-- **Reviewerの既定モデルをhaikuに下げる案は不採用**: project001は不特定多数の個別アプリのテンプレートであり、コピー先では実際のアプリケーションコードに対するセキュリティ・正確性レビューが行われる。テンプレートの既定を下げすぎると、それを継承した個別プロジェクトの品質が下がるリスクがある（「品質が低下すると判断したAgentは現状維持を選択する」という方針に従った）。
-- **Developerをopusに引き上げる案は不採用**: Developerの作業は基本的にPlannerが決めた方針に沿った実装であり、Planner ほどの開放的な設計判断は求められない。Sonnetはコーディング用途の標準モデルとして十分な理解力を持つと判断した。
-- **Developerの一部処理だけ軽量モデルに分離する案は不採用**: 単一のAgent定義内でタスクの種類ごとにモデルを動的に切り替える仕組みはなく、無理に分離すると新規Agent追加と同じ複雑化を招く。トークン最適化は「軽量モデルへの分割」ではなく「不要なAgent起動を避ける」（Managerの招集判断）で対応する方針とした。
-
-### 影響
-- Planner/Developer/Reviewerの品質・コストは、Managerが使用する対話モデルに左右されず安定する。
-- 軽量レビューが必要な場面では、Managerが呼び出し時に`model`パラメータを指定するだけで対応でき、Agent定義ファイルやsettings.jsonの追加変更は不要。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、このモデル構成が引き継がれる。個別プロジェクトでコーディング言語やドメインの複雑さが分かった時点で、Developer/Reviewerのモデルを調整することは妨げない。
-
----
-
-## D-008: ルートにAGENTS.mdを新設し、CLAUDE.mdとの責務を分離する
-
-- 日付: 2026-08-03
-- 状態: 採用
-
-### 背景
-- ユーザーから、汎用的な開発方針7項目（後方互換性を維持しない、最小実装、段階的成長、モジュール化、成熟したライブラリの優先、既存依存関係の再利用、長期保守性の重視）を最優先ルールとして統合してほしいという要望があった。
-- これを機に、「AIエージェントが常に守る開発方針・設計原則・ワークフロー・レビュー基準」と「Claude Code固有の設定・運用・参照導線」の責務を分離する（AGENTS.md／CLAUDE.md）よう指定された。
-- 注記: ここで新設するproject001直下の`AGENTS.md`は、T-003（D-003）で参照した「ponytail（DietrichGebert/ponytail）リポジトリ内のAGENTS.md」とは別物である。ponytail側は判定ラダー等の原文の出典に過ぎず、project001の`AGENTS.md`はそれを統合した本リポジトリ自身の方針文書である。
-
-### 決定
-- ルートに`AGENTS.md`を新設（48行、目標150行以内）。内容は「設計原則」（判定ラダー＋新7項目を統合・重複排除・矛盾解消した8項目）、「ワークフロー」（User→Manager→Planner→Developer→Reviewer→Manager→Complete、修正ループ、Agent起動制約）、「レビュー基準」（完了条件）、docsへの参照のみ。
-- `CLAUDE.md`は先頭に`@AGENTS.md`のimportを置き、内容をClaude Code固有の運用（セッション/Hook運用、トークン効率化、Skills/Agent Reachの導線、参照ドキュメント一覧）のみに絞った。開発方針・設計原則・ワークフロー・レビュー基準は書かない。
-- `docs/agents.md`から、AGENTS.mdと重複していたPonytail全文（判定ラダー・原則・手を抜かない対象、約37行）とオーケストレーションルールの重複5行を削除し、AGENTS.mdへの参照に置き換えた。Agent構成表・モデル構成（Model Routing）・Hookとの技術的接続・Hook構成・採用しなかったAgentの理由など、AGENTS.mdに書くには詳細すぎる情報はdocs/agents.mdに残した。
-- `.claude/agents/developer.md`・`reviewer.md`のPonytail参照先を「docs/agents.md」から「AGENTS.md」へ更新した。
-- `README.md`にAGENTS.mdを構成一覧の先頭に追加し、開発フロー詳細の参照先をAGENTS.mdへ変更した。
-
-### 重複ルール一覧と統合内容（新7項目 × 既存Ponytail原則）
-| 新ルール（ユーザー提示） | 重複していた既存ルール | 統合後の扱い |
-|---|---|---|
-| 後方互換性を維持しない、廃止パスは削除 | なし（新規） | AGENTS.md 設計原則3としてそのまま追加 |
-| 最小実装・投機的抽象化/設定/間接層を避ける | 「明示的に要求されていない抽象化を追加しない」「求められていないボイラープレートを書かない」 | 1つの原則（5）に統合し、新ルールの「投機的設定・間接層」という語を追加 |
-| 段階的成長・動くものの上に積む | なし（新規） | AGENTS.md 設計原則4としてそのまま追加 |
-| モジュール化・責務分離 | 「ファイル数は最小限に」 | 一見矛盾するため、「責務は分離するが、それは新しいファイル・抽象化を作ることとは別問題」として1原則（5）に統合し矛盾を解消 |
-| 成熟したライブラリを優先、無断で再実装しない | 判定ラダー3〜5段目（標準ライブラリ／ネイティブ機能／既存依存関係） | ラダー3段目に「成熟した外部ライブラリ」「ドキュメント確認」の文言を追加して統合 |
-| 既存依存関係を再利用、ドキュメント確認 | 「避けられる場合は新しい依存関係を追加しない」 | ラダー3・5段目に統合 |
-| 長期保守性重視・一時しのぎを避ける | 「最短の差分が勝つ」「意図的な簡略化は`ponytail:`コメントで明記」 | 矛盾するため、「最小 ≠ 一時しのぎ」という原則（6）を新設し、正しく理解した最小実装と黙って残す一時しのぎを区別する形で整理 |
-
-### 削除内容
-- `docs/agents.md`の「コード品質ルール（Ponytail）」節（約37行、判定ラダー全文・原則・手を抜かない対象・`ponytail:`コメント運用の説明）を削除し、AGENTS.mdへの参照1行に置き換えた。
-- `docs/agents.md`の「オーケストレーションルール」からManager起動制約・開発フロー・修正ループの重複5行を削除し、AGENTS.mdへの参照に置き換えた（Hookとの接続などdocs固有の技術的補足は残した）。
-
-### 検討したが不採用の案
-- **SKILL.mdへの分離**: 現時点でproject001にSkillsやAgent Reachは導入されておらず、AGENTS.md/CLAUDE.mdの記述にもSkill化すべき具体的な再利用ワークフローは存在しない。空のSKILL.mdや未使用の仕組みを先取りして作ると、YAGNIおよび「不要な抽象化や将来使うかもしれない設計は追加しない」という方針に反する。CLAUDE.mdに「導入する場合の指針」だけを1節残し、実体は作らなかった。
-- **CLAUDE.mdでのAGENTS.md内容の再掲**: `@AGENTS.md`のimportにより、CLAUDE.mdを開けば実質的にAGENTS.mdの内容も読み込まれるため、要約であっても再掲すると三重管理（AGENTS.md本体／import／CLAUDE.mdの要約）になり、過去のD-006と同じ重複問題を再発させる。importのみとし、要約の再掲はしなかった。
-
-### 影響
-- 開発方針の更新は今後AGENTS.md 1箇所で完結する。Ponytail側のルールが更新された場合も、更新箇所はAGENTS.mdのみになった。
-- CLAUDE.mdはClaude Code固有の内容だけになり、他のAIエージェント（AGENTS.md規約に対応する他ツール）からもAGENTS.mdを直接読める構成になった。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、AGENTS.md／CLAUDE.mdの責務分離が引き継がれる。
-
----
-
-## D-009: Agent-Reach対応をOptional Dependencyとして追加する
-
-- 日付: 2026-08-03
-- 状態: 採用
-
-### 背景
-- ユーザーから、[Panniantong/Agent-Reach](https://github.com/Panniantong/Agent-Reach)（MIT License、`agent-reach`というpipパッケージのCLIツール。GitHub/Web/RSS/YouTube/Reddit/X等を横断する情報収集の呼び出し方をSKILL.md経由でAgentに教える仕組み）への対応要望があった。
-- 要件は「本体を組み込まず、利用可能な環境では自動活用、未導入環境では従来どおり動作する」疎結合設計。project001自体をコードとして持たないテンプレートであるため、統合はドキュメントとAgent定義への指示のみで実現する。
-- ユーザー提示の前提には「REVIEW.md」「Issue運用」など、project001の実際の構成と一致しない記述があった。project001では完了条件はAGENTS.mdに集約済み（D-008）、状態管理はGitHub Issuesではなくdocs/tasks.mdで行っている。これらは新規に作らず、既存の構成（AGENTS.md・reviewer.md・docs/tasks.md）を拡張する形で要件を満たした。
-
-### 決定
-- **Researcher Agentを新設**（`.claude/agents/researcher.md`、`model: sonnet`）。外部情報収集・重複除去・信頼性評価を担当し、Plannerが必要と判断した場合のみManagerが起動する（常時起動しない）。
-- **検出方法**: `command -v agent-reach >/dev/null 2>&1 && agent-reach doctor` を調査開始前に実行し、成功時のみAgent-Reachの提供チャネルを優先利用する。失敗時（未導入・doctorエラーいずれも）は即座にWebFetch/WebSearchへフォールバックする。未導入環境で`command -v agent-reach`が`exit 1`で安全に失敗することを本セッションで実機確認済み。
-- **docs/agent-reach.md新設**: Agent-Reachの正体、検出方法、フォールバック方針、疎結合設計（依存を持たない、詳細をこの1ファイルに集約）を記載。
-- **docs/research-workflow.md新設**: Planner→Researcher→Developer→Reviewerの調査フロー、Researcherを起動する条件、Reviewerが確認する調査品質基準（情報源の妥当性・最新性・重複・Agent-Reach利用可否による品質差）を記載。
-- **AGENTS.mdのワークフローにResearcherを追加**（外部調査が必要な場合のみの分岐として、主フローは変更しない）。Agent-Reachという固有名詞はAGENTS.mdには書かず、「利用可能な検索ツールがあれば優先利用」という汎用的な表現にとどめた（AGENTS.mdは全AIエージェント共通の方針であり、特定ツールの銘柄をここに書くとCLAUDE.mdとの責務分離（D-008）が崩れるため）。
-- **CLAUDE.mdの「Skills / Agent Reach」節を更新**: Agent-Reachの基本方針（Optional Dependency、検出・フォールバックの一文）のみ記載し、詳細はdocs/agent-reach.mdへ委譲した。
-- **docs/agents.mdを更新**: Agent構成表・Model Routing表にResearcherを追加。「採用しなかったAgent」の`research`項目を、D-004時点の判断を覆した経緯（Agent-Reach対応により役割分離が明確になったため）として書き換えた（削除ではなく、判断が変わった理由を残す）。
-- **docs/tasks.mdの状態定義に`調査中`を追加**。あわせて「完了条件（CLAUDE.md参照）」という古い参照（D-008でAGENTS.mdへ移管済みだったが未修正だった）を「AGENTS.md参照」に修正した。
-- **planner.md/developer.md/reviewer.mdを更新**: Plannerは調査対象とチャネルを整理してResearcherに委ねる（自身の大量調査は行わない）、Developerは調査結果を実装に反映する、Reviewerは調査品質も確認する、という役割分担を明記した。
-
-### 重複ルール一覧・削除内容
-- 新規追加であり、既存ルールとの重複はない。ただしAgent-Reach固有の検出コマンド・チャネル一覧はdocs/agent-reach.mdのみに記載し、researcher.md/CLAUDE.md/AGENTS.mdには要点のみを書き、複製しなかった（同じ情報を複数箇所に保存しないというAGENTS.md/CLAUDE.mdの既存ルールを踏襲）。
-
-### 検討したが不採用の案
-- **REVIEW.mdの新規作成**: ユーザー提示の前提に基づけば作成候補だったが、project001には現在「レビュー基準」がAGENTS.mdに一元化されている（D-008）。追加する調査品質基準（4項目程度）は既存のAGENTS.md「レビュー基準」とreviewer.mdの拡張で十分収まる分量であり、新規ファイルにすると再びレビュー基準が分散する（D-006/D-008の教訓に反する）。docs/research-workflow.mdにReviewer観点の詳細を書き、AGENTS.md/reviewer.mdからはそちらを参照する形にした。
-- **docs/architecture.mdの新規作成**: D-006で「project001自体に汎用アーキテクチャの記述対象がない」として不採用にした判断は今回も維持した。ただしAgent-Reach統合固有のデータフロー（検出→フォールバック→Agent間の受け渡し）は、docs/agent-reach.mdの「疎結合設計（アーキテクチャ）」節に図として記載し、要望の実質（統合の設計を可視化する）には応えた。
-- **GitHub Issues運用への切り替え**: ユーザー前提文の「Issue運用を維持」は、project001の実態と異なる（現状はdocs/tasks.mdによる状態管理）。より大きな運用変更になり要望の範囲を超えるため、既存のdocs/tasks.md運用を「Issue運用に相当するもの」として維持する解釈を採った。
-- **`agent-reach`本体の依存追加やvendoring**: project001はアプリケーションコードを持たないテンプレートであり、依存を追加する対象（package.json等）がそもそも存在しない。検出はシェルコマンドのみで行い、コード上の依存は一切追加しなかった。
-- **SessionStart Hookでの起動時Agent-Reach検出**: Manager（root）はResearchを行わないため、セッション開始時に毎回検出する必要性がない。検出はResearcher起動時にBashで都度行う設計とし、新規Hookは追加しなかった（既存のHook最小主義を維持）。
-
-### 影響
-- Agent-Reachが導入された環境では、ResearcherがGitHub/Web/RSS/YouTube/Reddit/X等を横断的に調査できる。未導入環境でも、WebFetch/WebSearchへのフォールバックにより同じワークフローで動作し、機能停止しない。
-- project001のリポジトリにAgent-Reachへのコード依存は一切追加されていないため、Agent-Reach側のインターフェース変更はdocs/agent-reach.mdの更新のみで追従できる。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、Researcher Agentと疎結合なAgent-Reach対応が引き継がれる。
-
----
-
-## D-010: レビュー方針を敵対的検証（Adversarial Review）へ変更し、REVIEW.mdへ集約する
-
-- 日付: 2026-08-03
-- 状態: 採用
-
-### 背景
-- 現状のレビューは「問題がないか確認する」姿勢に寄りがちで、実装を追認しやすい構造だった。ユーザーから、レビュー担当を品質保証・監査・ペネトレーションテストの立場に切り替え、「壊れる理由」「失敗する理由」「仕様を満たさない理由」を優先して探す敵対的検証（Adversarial Review）への転換要望があった。
-- D-009では「REVIEW.mdの新規作成」を、当時想定していた追加項目（調査品質基準4項目程度）の分量では既存構成で足りるとして不採用にしていた。今回要求されたレビュー方針は、18観点・7手順・重要度5段階・指摘5項目という大幅に大きい分量であり、AGENTS.md/reviewer.mdに収めると再び責務が混在する。D-009の当該判断はこの点で前提が変わったため見直した。
-
-### 決定
-- ルートに`REVIEW.md`を新設。基本姿勢（敵対的検証）、レビュー観点（18項目）、レビュー手順（7段階）、重要度分類（Critical/High/Medium/Low/Nit）、指摘の記載形式、レビュー完了条件を集約した。
-- **検証パスを追加**（ユーザー要望を超えて提案・採用した改善）: 手順4「壊れるケースを列挙する」で出た仮説を無条件に報告せず、手順5で実際にコード・挙動を確認し `CONFIRMED`（確認済み）/`PLAUSIBLE`（確認しきれないが疑いが強い）のいずれかを付与してから報告する。裏付けが取れない仮説は報告しない。これは「肯定的結論を安易に出さない」という要求と対になる、逆方向のリスク（存在しない問題の捏造・誤検出）への対策であり、Anthropicの構造化レビュー手法（file:line根拠、failure_scenario、検証済み/推測の区別を分けて報告する設計）に沿った提案として採用した。
-- `.claude/agents/reviewer.md`のdescription/システムプロンプトを敵対的検証の立場に更新。旧方針にあったレビュー手法の詳細（file:line明記、指摘の3点セット等）はREVIEW.mdへ統合したため削除し、参照のみ残した（同じ情報を複数箇所に保存しない）。
-- `AGENTS.md`の「レビュー基準（完了条件）」に、詳細な姿勢・観点・手順はREVIEW.mdに従う旨の一文を追加。AGENTS.md自体の記載量は増やしていない。
-- `CLAUDE.md`は開発ルールのまま変更せず、「参照ドキュメント」にREVIEW.mdを追加し、冒頭の説明文を「レビュー基準はAGENTS.md」から「レビュー方針はREVIEW.md」に修正した（ユーザー前提の「開発ルールはCLAUDE.mdのまま」は、project001の実際の構成では開発ルールがAGENTS.mdにあるため、CLAUDE.md自体は変更せず参照導線のみ追加する形で解釈した）。
-- Reviewerのモデル（`sonnet`）は変更しなかった。敵対的検証の厳格化は主に手順（検証パスの明文化）で担保する設計とし、モデルのグレードアップは不要と判断した。
-
-### 重複ルール一覧・削除内容
-- `.claude/agents/reviewer.md`から、REVIEW.mdと重複する記述（指摘は事実に基づくこと、問題/状況/直し方の3点セット、file:line明記）を削除し、「レビューの姿勢・観点・手順...はREVIEW.mdに従う」という参照1行に置き換えた。
-
-### 検討したが不採用の案
-- **ReportFindingsツールをreviewer.mdのtoolsに追加**: 構造化された指摘報告の仕組みとして検討したが、custom subagent（`.claude/agents/*.md`）がこのツールへアクセスできるか確証が得られなかった。誤った前提でツール参照を書くとレビューが機能しなくなるリスクがあるため採用せず、同等の規律をREVIEW.md内のプレーンテキストの指摘形式として明文化した。
-- **Reviewerのモデルをopusへ引き上げ**: 敵対的検証の厳格化は手順（検証パスの導入）で対応可能と判断し、D-007の「Reviewerはsonnetで十分」という判断を維持した。
-- **AGENTS.mdへのレビュー手順統合**: レビュー専用ルールを開発ルールと同じファイルに置くと、AGENTS.mdが150行の目標に対して大きく膨らむ（レビュー手順だけで約35行）。AGENTS.md/REVIEW.md/CLAUDE.mdの3ファイル体制とし、責務を分離した。
-
-### 影響
-- reviewer Agentは今後、REVIEW.mdの手順（仮説列挙→検証パス→CONFIRMED/PLAUSIBLE判定→報告）に従う。「問題ありません」等の未検証の肯定的結論は使用しない。
-- レビュー基準の更新は今後REVIEW.md 1箇所で完結する。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、敵対的検証の方針が引き継がれる。個別アプリではUX/ブラウザ互換性等の観点も実際に該当するようになる。
-
----
-
-## D-011: 新規プロジェクト初期化手順をREADME.mdへ集約し、SessionStart Hookを完了タスク除外に変更する
-
-- 日付: 2026-08-05
-- 状態: 採用
-
-### 背景
-- D-002でproject001をテンプレートリポジトリと定義し「新規プロジェクト開始時は本リポジトリをコピーして雛形とする」と決定していたが、コピー後に`docs/tasks.md`・`docs/progress.md`・`docs/decisions.md`をどう初期状態へ戻すかという具体的な手順がこれまで文書化されていなかった。
-- リセットしないままだと、新規プロジェクトのSessionStart Hook（D-005）がproject001自身の構築履歴（T-001〜T-010等）を毎セッション表示し続けてしまう。さらにタスクが積み重なるほど表示されるT-xxx行数が増え、完了済みタスクまで含めて表示し続けるとトークン消費が件数に応じて線形に増加する構造上の問題も別途あった。
-
-### 決定
-- **初期化手順をREADME.mdに集約**: 「## 使い方」直後に「### 新規プロジェクトでの初期化」を新設し、`docs/tasks.md`（タスク一覧表のヘッダ・区切り行のみ残しT-xxx行・バックログを削除、列構成は変えない）・`docs/progress.md`（記録フォーマット直後の`---`〈この行を含む〉より下を削除）・`docs/decisions.md`（同様に`---`〈この行を含む〉より下のD-xxxを削除）・README.md自身（本節は削除可）の4項目の手順を記載した。AGENTS.mdの「## ドキュメント」節には手順本体を複製せず、README.mdを参照する1行のみを追加した。
-- **SessionStart Hookを完了タスク除外に変更**: `.claude/settings.json`のSessionStartのcommandに`awk -F'|' '$0 ~ /^[|] (ID|T-[0-9]+) [|]/ && $5 !~ /^ *完了 *$/' docs/tasks.md`を追加し、`docs/tasks.md`の行を`|`区切りで列分割した上で状態列（5列目）が`完了`の行を表示対象から除外した。PreCompactは変更していない。D-005で確立した「ダブルクォート不使用・1行完結・専用スクリプトファイルを作らない」という方針はそのまま維持した。
-  - 初回実装では`grep -vE '[|] *完了 *[|]'`により列位置を見ず行全体への部分文字列一致で判定していたため、備考欄など状態列以外のセルが単独で`完了`（前後空白のみ）と完全一致する行まで誤って除外される不具合があった（Reviewer指摘、CONFIRMED、Medium）。修正ループでawkによる列指定フィルタへ置き換え、状態列のみを判定対象とすることで根本原因を解消した。実データ（`docs/tasks.md`）と、状態が`未着手`で備考欄のみ`完了`という再現データの両方で修正後の挙動を確認済み（詳細はdocs/progress.md参照）。
-- **docs/agents.mdのHook構成説明を更新**: 表示対象が未完了タスクである旨、完了タスクを除外する理由（トークン消費の線形増加を防ぐため）、状態列（5列目）の値を`awk -F'|'`で判定しておりtasks.mdの表書式（列構成）を前提とする旨を追記した。
-- **Managerが確認した3点を本決定に反映**: (1) リセット対象に`docs/decisions.md`も含める、(2) コピー手段（git clone / GitHub Templateリポジトリ機能 / ファイルコピーのいずれか）は特定せず、いずれの方法でも`docs/`の中身がそのままコピーされる前提で手順を書く、(3) 本作業はT-011として1タスクにまとめる。
-
-### 理由（検討した代替案）
-- **初期化を自動化するスクリプト/コマンドの追加は不採用**: project001はアプリケーションコードを持たないテンプレートであり、リセット対象の削除は単純なMarkdown編集（表の行削除、区切り線以下の削除）に過ぎない。判定ラダー（1: そもそも必要か）に照らし、手順書（README.md）で十分要件を満たせるため、新規スクリプトファイルや依存関係を追加しなかった。
-- **リセットしないファイルを個別列挙する書き方は不採用**: `AGENTS.md`・`CLAUDE.md`・`docs/agents.md`等を個別に列挙すると、将来docs/にファイルが増えるたびに記述が古くなる。「docs/のうちtasks.md/progress.md/decisions.mdの3つのみをリセットする」という内包的な表現にすることで、対象外ファイルの列挙を不要にした。
-- **SessionStart Hookでの件数制限（例: 直近N件のみ表示）は不採用**: 完了/未完了という状態の意味に基づくフィルタの方が、Managerが実際に把握すべき情報（今何が残っているか）と一致する。件数による打ち切りは、未完了タスクがN件を超えた場合に表示漏れが生じるリスクがあり、状態ベースのフィルタより劣ると判断した。
-- **本決定を新規のD番号ではなくD-005の改訂として扱う案は不採用**: D-005（Hook導入の初回決定）は履歴として維持し、本決定はその変更点（完了タスク除外）のみを記録する後継のD-011とした。同様にD-002（テンプレート化の初回決定）も維持し、本決定はD-002が言及していなかった具体的なリセット手順を補完する位置づけとした。
-
-### 影響
-- 新規プロジェクトへコピーした直後、README.mdの手順に従うことでSessionStart Hookがproject001自身の構築履歴を表示しなくなる。
-- SessionStart Hookは今後、タスク件数が増えても未完了タスクのみを表示するため、トークン消費が完了タスクの累積によって線形に増加することがなくなる。
-- `docs/tasks.md`の表書式（列構成、状態列の値として`完了`を使うこと）を変更する場合は、SessionStart Hookのフィルタ条件（`awk -F'|'`による状態列＝5列目の判定）も合わせて見直す必要がある制約が生じた。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、この初期化手順とHookの完了タスク除外が引き継がれる。
-
----
-
-## D-012: Capability Layer（Agent-Reach・Code Review Graphの検出規約）を統合する
-
-- 日付: 2026-08-05
-- 状態: 採用
-
-### 背景
-- project001はAgent-Reach（D-009）を「検出できれば優先利用・なければフォールバック」という指示規約として個別に統合していたが、同種の外部ツール（Code Review Graph等）が今後増えるたびに同じ検出パターンを都度別個に設計すると、規約自体が分散し重複する懸念があった。
-- ユーザーから、この検出パターンを一般化した「Capability Layer」として整理し、あわせてCode Review Graph（コードベースをグラフ化し変更の影響範囲を解析するCLIツール）をOptional Dependencyとして統合してほしいという要望があった。要求リストには他にGitHub CLI/Playwright/Node.js/Python/MCP Serverも含まれていたが、project001自体はアプリケーションコードを持たないテンプレートであり、これらを実際に消費するタスクが現時点で存在しない。
-
-### 決定
-- **Capability Layerを「実行可能な基盤ではなくAgentへの指示規約」として実装する**。検出ロジック自体をスクリプトやフレームワークとしてコード化すると、それ自体が正当化できない新規依存になる（AGENTS.mdの判定ラダー3〜5段目に反する）ため、新規スクリプトファイルは一切追加せず、`docs/capability-layer.md`に「`command -v`で検出→利用可能なら優先利用→不可なら即座にフォールバック→ツール固有の仕様は専用docsに集約」という規約を文書化し、各Agent定義ファイル（planner/developer/reviewer/researcher.md）に1行ずつ参照を追加するに留めた。
-- **要求された7ツールのうちAgent-ReachとCode Review Graphの2つのみを実際にAgentの振る舞いへ統合する**。GitHub CLI/Playwright/Node.js/Python/MCP Serverは、project001自体に消費するタスクが存在しないため（YAGNI）、検出コマンドの型のみを`docs/capability-layer.md`の「将来のCapability候補」表に記載し、Agentの振る舞い（`.claude/agents/*.md`）への統合は見送った。個別アプリのリポジトリで実際に使うタスクが発生した時点で、この表に沿って追記する運用とする。
-- **Code Review GraphはCLI直接呼び出しのみを統合し、MCPサーバーモード（`code-review-graph serve`）は統合しない**。デーモンプロセスの起動・停止管理や`.mcp.json`への新規登録が必要になり、project001が重視する疎結合設計（依存を追加しない、いつでも取り除ける）に反するため、CLIの`build`/`update`/`detect-changes --brief`のみをDeveloper/Reviewerの振る舞いに組み込んだ。
-  - 修正ループ（Reviewer指摘対応・1周目、High/CONFIRMED）: 初回統合時はBlast Radius Analysis / Impact Analysisも`detect-changes --brief`にマッピングしていたが、Reviewerが実機検証（`pip install code-review-graph`、2ファイル構成のgitリポジトリで`build`後に`detect-changes --brief`と`impact --files <変更ファイル>`を比較）した結果、`detect-changes --brief`は呼び出し元・影響ファイルを一切返さず、`--help`に"Analyze the blast radius of changes"と明記された別サブコマンド`impact`（`--files`/`--depth`/`--max-results`、`impacted_nodes`/`impacted_files`を含むJSONを返す）が影響範囲解析の実体であることが判明した。DeveloperがReviewerの手順を再現確認した上で、`docs/code-review-graph.md`のマッピングをReview Delta＝`detect-changes --brief`、Blast Radius Analysis / Impact Analysis＝`impact --files <変更ファイル>`に訂正した（詳細はdocs/progress.mdのT-012修正ループ参照）。
-- **docs/architecture.mdは新設しない**。D-004/D-006/D-009で3回却下済みの判断（project001自体に汎用アーキテクチャの記述対象がない）を維持し、Capability Layer固有のデータフロー図は`docs/capability-layer.md`内に収めた（D-009でAgent-Reach固有の図をdocs/agent-reach.md内に収めた前例を踏襲）。
-- **docs/review-workflow.mdは新設せず、REVIEW.md自体を拡張する**。レビュー観点に「依存関係（呼び出し元・呼び出し先への影響、blast radius）」を19項目目として追加し、検証パスの判定にCode Review Graphの検証手段を追記した（修正ループを経た最終版では、呼び出し元・影響ファイルの検証は`impact --files`、変更内容の要約確認は`detect-changes --brief`という役割分担で明記している。上記「修正ループ」参照）。別ファイルに分割すると、過去（D-006/D-008）に繰り返し発生した重複問題（同じ情報を複数箇所に保存してしまい更新漏れが生じる）を再発させるため、既存のREVIEW.mdへの追記に留めた。
-- **「PR Review」機能（`/code-review-graph:review-pr`）は統合しない**。エディタ統合用のスラッシュコマンドであり、Agentから直接呼び出せる確証が得られなかった。ユーザーが本セッションで`/hooks`コマンドを利用できないと報告した過去の教訓（T-006）と同種の「UIコマンドはAgentから呼び出せるとは限らない」という制約を警戒し、代わりに`detect-changes --brief`で得られる情報をReviewerが解釈する運用とした。
-- **SessionStart HookにCapability検出を追加する**。`.claude/settings.json`のSessionStartのcommand先頭に`agent-reach`・`code-review-graph`の利用可否を`command -v`で検出し表示する処理を追加し、Manager経由で各Agent起動時にこの結果を伝達できるようにした（同じ検出コマンドをAgentごとに繰り返し実行する無駄を避けるキャッシュ効率化）。ただし各Agent（researcher.md等）は`command -v`による自己検出も維持する。D-009の「Hookでの起動時Agent-Reach検出は不採用」という判断を今回は見直したが、これはHookが発火しない実行環境が存在する（T-005/T-006の教訓）ことへの対応として、自己検出という既存のフォールバック経路を廃止せず併存させる設計にしたためであり、Hookへの依存を新たに必須化するものではない。
-
-### 理由（検討した代替案）
-- 上記「決定」内の各項目に代替案（MCPサーバーモード統合、architecture.md新設、review-workflow.md新設、PR Review機能統合、7ツール全統合）を記載済みであり、いずれも疎結合設計の維持・過去の重複問題の再発防止・YAGNI・Agentからの呼び出し確証の欠如を理由に不採用とした。
-
-### 影響
-- Agent-Reach・Code Review Graphのいずれも未導入の環境（本セッション含む）では、SessionStart Hookが両方`unavailable`と表示し、各Agentは従来どおりRead/Grep/Bash/WebFetch/WebSearchによる標準フローで動作する。動作確認はdocs/progress.mdのT-012参照。
-- 今後3つ目以降のCapabilityを統合する際は、`docs/capability-layer.md`の規約（検出→優先利用→フォールバック→専用docsへの詳細集約）にそのまま従うことができ、規約自体の再設計は不要になる。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、このCapability Layerの規約とAgent-Reach・Code Review Graphの統合が引き継がれる。GitHub CLI等の残り5ツールは、個別アプリのリポジトリ側で必要になった時点で`docs/capability-layer.md`の表に沿って追加統合する。
-
----
-
-## D-013: サブエージェント進捗を`subagentStatusLine`で可視化する
-
-- 日付: 2026-08-05
-- 状態: 採用
-
-### 背景
-- ユーザーから、サブエージェント実行中のみ、専門知識のないユーザーでも直感的に理解できる形で進捗を可視化してほしいという要望があった。制約として「Claude Code標準機能を活用」「不要なLLMトークンを消費しない」「状況変化時のみ更新」が明示されていた。
-
-### 決定
-- **HooksではなくsubagentStatusLineを採用する**。HooksはLLMの会話コンテキストへテキストを注入する仕組みであり、継続的な進捗表示に使うとトークンを消費し続けてしまう。`subagentStatusLine`（`.claude/settings.json`）はエージェントパネルというUI側でレンダリングされるだけで会話コンテキストに入らないため、「不要なLLMトークンを消費しない」という制約を構造的に満たす。Agent View（サブエージェント実行時のみ自動的に現れるパネル）とsubagentStatusLine（そのパネルの各行の表示内容）は競合する選択肢ではなく、後者は前者の中身をカスタマイズするものであり、「通常チャットでは表示しない／エージェント実行時のみ自動表示」はAgent View自体の既定挙動としてすでに満たされている。
-- **専用スクリプトファイル（`.claude/statusline-subagent.sh`）を新設する**。既存のHookは1行コマンドで済ませてきたが、今回はサブエージェント種別→日本語文言の対応表（case分岐、将来の拡張性のため）と、複数の候補フィールドへの防御的なフォールバック抽出が必要で、1行コマンドに詰め込むと可読性・保守性が著しく落ちるため、Ponytailの「1行で書けるか」を検討した上で専用ファイルを選んだ。
-- **`.claude/agents/*.md`の`name`フロントマターとの対応表を1つのスクリプト内に集約する**。新しいサブエージェントを追加する際は、対応表に1行足すだけで拡張できる構造にした。
-
-### 実装過程で発見・修正した問題（実機検証の記録）
-- 最初にstatusline-setupエージェント（Read/Editのみ、Bashを持たない）へ依頼した際、`subagentStatusLine`の公式stdinスキーマが不明なまま「1エージェント1回呼び出し、フラットなJSON、プレーンテキスト出力」という誤った前提で実装された。ManagerがWebSearch/WebFetchで公式ドキュメント（code.claude.com/docs/en/statusline）を確認した結果、実際は「リフレッシュごとに1回、表示中の全サブエージェントを`tasks`配列でまとめて渡す」「出力はタスクごとに1行のNDJSON `{"id":..., "content":...}`」という全く異なる仕様であることが判明し、スクリプトを書き直した。
-- 当初`columns`（行幅）に合わせて`cut -c`で切り詰める実装にしていたが、実行環境の`LC_CTYPE=POSIX`（Cロケール）では`cut -c`がバイト単位で切り詰め、日本語が文字化けすることを実機テストで発見した。`columns`がコードポイント数・表示幅のどちらを指すかも公式ドキュメントに記載がなく確認できなかったため、行全体のtruncationを撤去し、内容自体を短く保つ（description部分のみjqのUTF-8安全なスライスで20文字に軽く制限する）方針に変更した。
-- `jq -n`（`-c`なし）が複数行に整形出力するため「1行1タスク」というNDJSON仕様に違反していたことを発見し、`-c`（compact）フラグを追加した。
-- 現在実行中のツール名を表すフィールドは公式スキーマに存在しないため、当初想定していた「developer内で実装中/確認中を区別する」という細分けは実現不可能と判断し、断念した（確認できない挙動を前提にした実装はしない。AGENTS.mdの「理解してから作る」原則）。
-
-### 理由（検討した代替案）
-- **Hooksでの実装は不採用**。上記の通りトークン消費の要件に反する。
-- **1行コマンドでの実装は不採用**。ロジックの複雑さ（対応表・防御的フィールド抽出）を考慮し、可読性・保守性を優先して専用スクリプトファイルを選んだ。
-- **developerの「実装中/確認中」の細分けは不採用**。公式スキーマに現在使用中のツール名を表すフィールドがなく、確認できない挙動を前提にした実装を避けた。
-- **手動でのDeveloper→Reviewerパイプラインは今回省略**。Managerが自ら公式ドキュメントを調査し、複数のモックデータで直接動作確認（正常系・空データ・不正JSON・長い説明文の切り詰め・NDJSON形式の妥当性）を行い、2件の実バグ（スキーマ誤認識、truncationのマルチバイト破壊）を自力で発見・修正済みであるため、Reviewerによる重複した検証は費用対効果が低いと判断した。
-
-### 影響
-- サブエージェントが実行されるたびに、エージェントパネルに専門用語を使わない日本語の進捗が自動的に表示される。通常のチャット時・サブエージェントが1つも動いていない時は何も表示されない。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、この進捗可視化が引き継がれる。新しいサブエージェントを追加する場合は`.claude/statusline-subagent.sh`の対応表に1行追加するだけでよい。
-- `status`フィールドの正確な値の一覧、`columns`フィールドの単位（コードポイント数か表示幅か）は公式ドキュメントに明記がなく未確認のまま運用する。実際にサブエージェントを実行した際に想定と異なる表示になった場合は、docs/status-line.mdの記載に沿ってスクリプトの抽出部分を調整する。
-
----
-
-## D-014: AGENTS.mdの設計原則1〜8はPonytailプラグインへの参照に置き換えず、本文を圧縮するに留める
-
-- 日付: 2026-08-06
-- 状態: 採用
-
-### 背景
-- ユーザーが個人環境（project001とは別スコープ）にPonytailの公式プラグイン（6 Skills）を含む複数のClaude Codeプラグインを導入しており、AGENTS.mdの設計原則1〜8（出典: DietrichGebert/ponytail）と内容が重複することが判明した。トークン削減のため、AGENTS.mdの該当部分をプラグインへの「参照のみ」に簡略化する案が検討された。
-
-### 決定
-- **「参照のみ」への置き換えは不採用、本文は維持し説明文のみ圧縮する**。理由は2点。
-  1. project001のサブエージェント4つ（`.claude/agents/{developer,reviewer,planner,researcher}.md`）はいずれも`tools`フィールドに`Skill`を含んでおらず、プラグインのSkillを自動トリガーする手段を持たない。実装・レビューを担うDeveloper/Reviewerが原則を実際に参照できるのは、CLAUDE.mdの`@AGENTS.md`importによって本文がそのままセッションコンテキストへ注入されているためであり、これは`Skill`ツールの有無と無関係に効く経路である。本文を「参照のみ」に置き換えると、この経路が失われる。
-  2. 本リポジトリの開発を実際に行っているClaude Code Remote環境そのものに、Ponytailプラグインは導入されていないことをファイルシステム調査（`find`によるponytail関連ファイル・プラグイン設定の探索）で確認した。ユーザーが提示したプラグイン一覧の画面は別のClaude Code環境（デスクトップアプリ等）のものであり、このセッションから参照できるプラグインではない。
-- 上記2点により、「4エージェントに`Skill`ツールを追加し、プラグインの更新を自動的にAGENTS.mdへ反映する同期の仕組みを設ける」という代替案も検討したが、同期元のプラグインがこの環境から見えない以上、同期機構を作っても機能しないため不採用とした（判定ラダー1: そもそも必要か）。加えて、この案はCLAUDE.mdの既存方針「project001自体はいずれのツールにも依存しない」とも矛盾する。
-- 採用したのは、原則の見出し・番号構成・意味を変えず、冗長な言い回しのみを削る圧縮。`判定ラダー`・`手を抜かない対象`・`ponytail:`コメント運用・`根本原因`はdocs/agents.md・decisions.md・developer.mdから見出し語として名指しで参照されているため、これらの用語・構造は残した。
-
-### 結果
-- AGENTS.mdの「設計原則」セクションは2721文字→2478文字（約9%減）。プラグインとの内容重複は解消されないが、意図的に許容する（テキストの独立性・移植性を優先）。
-
----
-
-## D-015: project001をClaude Code Starter Kit化する（bootstrap.sh・Context7統合・GitHub CLI検出）
-
-- 日付: 2026-08-06
-- 状態: 採用
-
-### 背景
-- 外部Issue経由で、project001を「Claude Code Starter Kit」として拡張する要求が寄せられた。要求内容には、環境セットアップの自動化、Claude Codeプラグインの既定有効化、Context7のMCP統合、Ponytailを「Claude標準のコンパクション機能」に置き換える提案などが含まれていた。
-- Managerが事前に内容を精査した結果、要求の一部はproject001の既存方針（疎結合設計・Optional Dependency・YAGNI）と矛盾する、または事実誤認に基づいていることが判明した。実装前にManagerが採用/縮小/見送りを判断した上でDeveloperへ着手を指示した。
-
-### 決定
-Managerが事前判断した4点をそのまま採用した。
-
-1. **Bootstrapは「案内のみ」で実装する**（自動インストールしない）。`.claude/bootstrap.sh`を新設し、`command -v`のみでAgent-Reach/Code Review Graph/Context7/GitHub CLI/Node.js/Python/Playwrightの導入状況を検出する。導入済みはバージョン表示、未導入は用途とインストール例を表示するのみで、実際のインストール・書き込みは一切行わない。`--check`モード（Hook用、厳密に2行の圧縮出力）と引数なしモード（人間向け）の2モードを持ち、常に`exit 0`で終了する。
-2. **Claude Codeプラグインはproject scopeで既定有効化しない**。運用手順（有効化する場合のキー構成・スコープ階層）のみをdocs/capability-layer.mdに記載し、実際の有効化はしない。
-3. **Context7はCLI版（`ctx7`、`command -v`で検出）のみを統合し、MCP版（`https://mcp.context7.com/mcp`）は統合しない**。理由は、project001のsubagent（`.claude/agents/*.md`）の`tools`フロントマターがallowlist方式でありMCPツールを呼び出せないこと、およびAPIキー管理という新しい秘密情報の運用が発生し疎結合設計に反すること。
-4. **Ponytailの「Claude標準コンパクション置き換え」提案は採用しない**。Ponytailは既にAGENTS.mdの設計原則1〜8としてテキストベースで統合済み（D-003、D-014）であり、ツールでも自動コンパクション機構でもない。Issueの「Ponytail→Claude標準コンパクション」という代替記述は、Ponytailの実体（判断ラダー・原則集）とClaude Codeのコンテキスト圧縮機能（PreCompact Hook、D-005）という無関係な2つの概念を混同した事実誤認であり、コード変更は行わずこの決定に事実誤認である旨を記録するに留める。
-
-あわせて、`/init-project`コマンド（`.claude/commands/init-project.md`）を新設した。README.mdの「### 新規プロジェクトでの初期化」節の手順内容を複製せず、「README.mdの該当節を読んで手順を実行せよ」という指示のみを記載し、手順の更新箇所を1箇所（README.md）に保つ。
-
-GitHub CLI（`gh`）は、Capability Layerの「将来のCapability候補」（D-012時点では未統合）からTier1（統合済み）へ昇格させた。Researcherが調査で優先利用する対象とし、専用docsは設けずdocs/capability-layer.mdの表とresearcher.mdの参照のみで完結させた（`gh`固有の詳細手順はGitHub公式ドキュメントに委ね、project001側では複製しない）。Node.js・Python・Playwrightは、D-012と同様に検出のみ（Tier2）に留めた。
+1. **Records.json（形式D）はv1スコープに含める**（D-002項目7を上書きする）。既に実装・単体テスト済みであり、動作するコードを「決定と矛盾するから」という理由だけで削除しない。ただし、同一zip内に`Semantic Location History/`が存在する場合、`Records.json`は**インポート対象から除外する**（後述の決定4）。`Records.json`単体のエクスポート（Semantic Location Historyを含まないTakeout）を読み込む場合にのみ形式Dとして処理する。docs/tasks.mdのバックログから該当行を削除する。
+2. `TimelineJsonParser.kt`のimportを`android.util.JsonReader`/`android.util.JsonToken`から`com.google.gson.stream.JsonReader`/`com.google.gson.stream.JsonToken`へ切り替える。`app/build.gradle.kts`に`com.google.gson:gson`（version catalog経由）を追加する。呼び出し箇所（メソッド名・シグネチャ）は変更不要。
+3. 各フィールド読み取り箇所で`reader.peek() == JsonToken.NULL`を判定し`nextNull()`でスキップしてnull値として扱う共通ヘルパー（例: `readNullableString`/`readNullableLong`/`readNullableDouble`）を導入する。加えて、各セグメント/レコード単位の処理（`parseDeviceTimelineSegment`/`parsePlaceVisit`/`parseActivitySegment`/`parseRecordsArray`の要素ループ内側等）を`try/catch`で囲み、想定外の型不一致等が発生した要素はスキップしてログに残し、パース全体は継続する。
+4. `parseZip`がzip内のエントリ種別（`Semantic Location History/`系か`Records.json`か）を認識し、前者が1件以上存在する場合は後者を読み飛ばす。加えて、`RawTrackBuilder.build()`（または`parseZip`の最終段）で全点を時刻昇順に安定ソートする（zip格納順・複数月ファイルの結合順が時系列と一致しない問題への対処。単一形式・単一エントリの場合も安全側として常に適用する）。
+5. Gson導入後、`TimelineJsonParserTest.kt`に形式A〜D各1件の合成JSONを実際に`parseJson`/`parseZip`へ通す統合テストを追加し、D-003が「今回追加できていない」としていたコアパースロジックの自動検証を行う。あわせて本Dの決定3（null耐性）・決定4（ソート・Records.json除外）を検証するテストケースも追加する。
 
 ### 理由
-- **bootstrap.shを新設したことについて**: D-012時点ではCapability検出コマンドを`.claude/settings.json`のSessionStart Hookコマンド文字列に直接列挙していたが、検出対象がAgent-Reach・Code Review Graphの2つからContext7・GitHub CLI・Node.js・Python・Playwrightを加えた7つに増えたことで、1行コマンドが著しく長大化し可読性が落ちた。判定ラダー6段目（1行で書けるか）を再評価した結果「1行では収まらない」という結論になり、D-013で`subagentStatusLine`用のスクリプトファイルを新設した際と同じ判断基準で専用スクリプト化した。新規の外部依存は持たず（`command -v`のみ）、判定ラダー3〜5段目には反しない。
-- **自動インストールを採用しなかった理由**: project001はアプリケーションランタイムを持たないテンプレートであり、環境ごとのパッケージマネージャ・権限・OS差異を吸収する自動インストーラを実装すると、それ自体がテンプレートの複雑性・保守負債になる。「あれば使う、なければフォールバック」という既存のOptional Dependency方針（D-009〜D-012）を維持し、案内のみに留めた。
-- **プラグインを既定有効化しなかった理由**: project001を雛形としてコピーする派生プロジェクトすべてに、特定ユーザーの個人的なプラグイン選好を強制することになり、テンプレートとしての中立性を損なう。D-014で確認した「project scope」「user scope」の区別を踏まえ、有効化するかどうかは各派生プロジェクト側の判断に委ねる。
-- **Context7 MCP版を統合しなかった理由**: docs/context7.mdに記載の通り、`tools`allowlistの制約とAPIキー管理という新しい秘密情報の発生が、project001の疎結合設計（依存を追加しない、いつでも取り除ける）と真っ向から矛盾するため。
-
-### D-012からの変更点
-- Capability Layerの検出手段が「`.claude/settings.json`のSessionStart Hookコマンド文字列への直接列挙」から「`.claude/bootstrap.sh`という専用スクリプトへの切り出し（Hookは`bash .claude/bootstrap.sh --check`を呼ぶのみ）」に変わった。
-- 統合済みCapability（Tier1）がAgent-Reach・Code Review Graphの2つから、Context7・GitHub CLIを加えた4つに増えた。
-- `docs/capability-layer.md`の表構成を「現在統合済み／将来の候補」の2表から、「Tier1（統合済み）／Tier2（検出のみ）／対象外」の3階層に再編し、対象外に分類する理由（MCP Server、Claude Design、Ponytail、Claude Codeプラグイン全般）を明記した。
-- `/init-project`コマンドが新設され、README.mdの初期化手順への導線がスラッシュコマンド経由でも提供されるようになった。
-
-### 検討したが不採用の案
-- **`agent-reach doctor`等ツール固有のヘルスチェックをbootstrap.shに組み込む案**: `--check`の出力を厳密に2行（Hook用の圧縮出力）に保つ要件と衝突する。ヘルスチェックの詳細は各Agentの自己検出（`docs/agent-reach.md`等）に委ね、`bootstrap.sh`は`command -v`による存在確認のみに徹した。
-- **GitHub CLI専用のdocs/gh.mdを新設する案**: `gh`はGitHub公式のCLIであり、project001固有の疎結合設計の説明（依存を持たない・フォールバックする）以外に記載すべき固有の統合仕様がAgent-Reach・Code Review Graph・Context7ほど多くない。docs/capability-layer.mdの表とresearcher.mdの参照のみで要件を満たせると判断し、新規ファイルは追加しなかった。
+- Records.jsonを削除するより「同一zip内でSemantic Location Historyと重複する場合のみ除外する」方が、動くコードを活かしつつ指摘1（データ源混在）の実害を解消できる最小の変更である。Records.json単体エクスポートというありうる入力（ユーザーがTakeoutで生GPSのみを選択した場合）を切り捨てない。
+- Gsonへの切替はAGENTS.mdの判定ラダー3（既存の成熟した外部ライブラリで足りるか）に合致し、D-002が避けたかった「ドキュメント全体をメモリに載せる高水準シリアライズライブラリ（Kotlinx Serialization/Moshi）」とは性質が異なる、同一設計思想のストリーミングAPIへの単純な実装差し替えである。
+- null耐性は要件で明示された「データ損失を防ぐエラーハンドリング」（AGENTS.md原則8）そのものであり、実データでの信頼性に直結するため必須修正とする。
 
 ### 影響
-- 新規に`git clone`したユーザーは、`bash .claude/bootstrap.sh`を実行するだけで、project001が想定するOptional Dependencyの導入状況を一括確認できる。未導入のままでもproject001は完全に動作する。
-- 今後5つ目以降のCapabilityを追加する場合、`.claude/bootstrap.sh`のリスト・`docs/<tool>.md`・利用するAgent定義ファイル・`docs/capability-layer.md`のTier表・`docs/decisions.md`の5箇所を更新する手順が「新しいCapabilityを追加する手順」としてdocs/capability-layer.mdに明文化された。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、`.claude/bootstrap.sh`・Context7統合・GitHub CLI検出・`/init-project`コマンドが引き継がれる。
+- D-003が「解消不能」としていた自動テストの欠如は、本D-004の実施後に解消される想定。D-003の記述自体は経緯の記録として削除しない。
+- 以降のdeveloperタスクは、`TimelineJsonParser.kt`のnull安全化・zip内ソースの優先順位付け・ソートを本Dの決定に従って実装する。
 
 ---
 
-## D-016: Claude Code 2026運用ナレッジの適用計画を採否判断する
+## D-005: TrackCleanerの実距離判定にHaversineを使う（Mercator投影距離との用途分離）
 
-- 日付: 2026-08-10
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- 外部調査（Researcher）で得た2026年のClaude Code運用ナレッジ約20件について、AGENTS.mdの判定ラダーを適用して採否を判断した。公式ドキュメント（code.claude.com/docs/en/best-practices）を一次確認済み。
+- T-004（GPSノイズ除去・ルート簡略化）のレビューで、Reviewerが`Mercator.distanceMeters`（Webメルカトル投影後のユークリッド距離）を`TrackCleaner`の速度スパイク除去・停留ジッタ抑制の閾値判定（km/h・メートルという実世界の物理量との比較）にそのまま使っていることをHigh/CONFIRMEDとして検出した。Webメルカトルは`1/cos(緯度)`でスケールが歪むため、赤道以外では投影距離と実距離が乖離する（東京駅↔新宿駅で約23%過大、北緯60度では約2倍）。日本を含む大半のユーザー地域で常時発生する問題であり、ノイズ除去の判定基準が緯度依存で変動してしまう。
 
-### 決定（採用4件）
-1. REVIEW.mdへ過剰指摘抑制ルールを追加した。検証で裏付けが取れた指摘でも、正確性・要件充足・セキュリティ・データ整合性のいずれにも影響しないものは`Low`/`Nit`に分類し必須修正としない。セキュリティ・データ整合性に関わる指摘は必須側に残す。
-2. CLAUDE.mdの「トークン効率化」節に、CLAUDE.md/AGENTS.mdは`@AGENTS.md`importにより毎セッション読み込まれること、各行を「消すとAIが判断を誤るか」で判定し否なら削除するという削除テストを明文化した（対象はCLAUDE.md/AGENTS.mdのみ、REVIEW.md/docs/はオンデマンドロードのため対象外）。
-3. CLAUDE.mdの「セッション運用」節の`/compact`表記を、圧縮時に残したい観点を指定できることが伝わる`/compact <残したい観点>`に修正した。
-4. docs/agents.mdのStop Hook不採用理由を、公式が示す「確定的なレビューゲート」パターンとの比較で補強した。
+### 決定
+- `Mercator.kt`に、2点の緯度経度から大圏距離（Haversine公式）を直接計算する関数（例: `haversineDistanceMeters`）を追加する。
+- `TrackCleaner.kt`の`removeSpeedSpikes`・`suppressStationaryJitter`（実世界のkm/h・メートルと比較する箇所）はHaversine版に置き換える。
+- `Simplifier.kt`のDouglas-Peucker（投影平面上での垂線距離によるepsilon比較、幾何学的な簡略化が目的でありMapLibreの描画自体もWebメルカトルベース）は、既存のMercator投影距離のままでよい（用途が異なるため置き換えの必要はない）。ただし、`Mercator.distanceMeters`という関数名が「実距離」であるかのように誤読されやすいため、コメントまたは命名で「投影空間内の距離であり実世界の距離ではない」ことを明示する。
+- あわせてReviewerが指摘したLow（`Simplifier.kt`のコメントが実際には存在しないdocs/tasks.mdの文言をあたかも引用のように記載していた誤記）を修正する。
+- Reviewerが指摘した残り2件のLow/Nit（`removeSpeedSpikes`が点列の先頭・末尾を判定対象外とする構造的な限界、JSON全体が`null`一つだけの場合のクラッシュ）は、実運用での発生可能性が低い・後続段（停留ジッタ抑制や簡略化）で一定緩和される既知の限界として、今回は対応せずdocs/tasks.mdのバックログへ記録するに留める。
 
-### 決定（見送り、詳述3件）
-- **Stop Hook確定的ゲート**: 公式はpass/failを返すスクリプトを前提とした確定的レビューゲートとしてのStop Hookを紹介しているが、(1)project001にはアプリケーションコードがなく機械判定可能なチェック（テスト・ビルド等）が存在しない、(2)REVIEW.mdの敵対的検証はLLMの判断でありスクリプト化できない、(3)8回連続ブロックでClaude Codeが自動オーバーライドする仕様のため「確定的」な保証にもならない、という3つの理由により見送った。
-- **Dynamic Workflows / Agent Teams（大量ファンアウト）**: project001の「Managerのみが起動する」統制原則（ルート会話をManagerにする構造で技術的に担保、D-004参照）と正面衝突する。またHook出力はManager（ルートセッション）にのみ注入されファンアウト先のサブエージェントには届かないため、Capability Layer設計（SessionStart Hookの検出結果をManager経由で各Agentへ伝達する構造）が機能しない。project001自体にアプリケーションコードがなく、数十単位に分割できるタスクが存在しないことも理由に加わる。
-- **Skillsへの移送**: 移す対象（時々しか関係しない知識）が存在しない。時々しか使わない初期化手順は、既に`/init-project`コマンド＋README.md（D-015参照）で公式パターンと同等の効果を達成済みである。
-
-### 決定（見送り、圧縮7件）
-- maxTurns: 公式ドキュメントでオプション名を確認できず、D-013の前例（未確認挙動を前提にした実装はしない）に従い断念した。
-- 並列サブエージェント3-5件のスイートスポット: project001はファンアウトしないため適用対象がない。
-- サブエージェント過剰生成への警告: AGENTS.md判定ラダー1（そもそも必要か）で既に担保済み、D-004/D-007が実例。
-- 調査スコープを絞る運用: docs/research-workflow.md・planner.md・researcher.mdに既に実装済みで追記は重複になる。
-- `/btw`: AIが実行できないUI操作であり、CLAUDE.mdの削除テストに落ちる。
-- `/usage`統合・Remote MCP・Agent Skillsオープン標準化・Auto Mode: project001に消費するタスクがない、または既にdocs/capability-layer.mdで対象外整理済み。
-- 他OSSカタログ型テンプレートとの対比: project001の疎結合最小構成は差別化ポイントであり、記録のみに留める。
-
-### 既存判断の裏付け（変更なし）
-- Writer/Reviewer分離: 公式が同じ理由付けをしており、D-004/D-010の裏付けとなることを確認した。
-- `@path`import・subagent frontmatter仕様: project001の既存実装が公式仕様と一致していることを確認済み。
-
-### D-006からの変更点
-- Stop Hook不採用の理由に、機械判定可能なチェックの不在・8回連続オーバーライドの2点を追加したが、結論（Stop Hookは採用しない）は変えていない。
+### 理由
+- ノイズ除去の閾値は要件（GPSの揺れ・大量データでルート表示が不自然にならないこと）に直結する中核ロジックであり、緯度依存で判定基準が変動する不具合は看過できない（AGENTS.md原則8「手を抜かない対象」の「問題の理解」「データ損失を防ぐエラーハンドリング」に該当）。
+- Douglas-Peuckerの投影距離は「地図上でどれだけ視覚的にズレるか」を測る幾何学的な指標として妥当であり、Haversineに統一する必要はない。用途ごとに適切な距離関数を使い分ける。
+- 残り2件のLow/Nitは、Reviewer自身も「実運用上の発生可能性は極めて低い」と評価しており、AGENTS.mdの判定ラダー1（YAGNI）・REVIEW.mdの過剰指摘抑制ルールに照らし、今は対応を見送る。
 
 ### 影響
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、レビュー過剰指摘の抑制ルールとCLAUDE.mdの削除テストが引き継がれる。
+- 以降のdeveloperタスクは、実世界の物理量と比較する箇所ではHaversine、幾何学的な簡略化ではMercator投影距離、という使い分けを踏襲する。
+- T-006（地図表示）以降で新たに実距離が必要になった場合も、Haversine版を再利用する。
 
 ---
 
-## D-017: PostToolUse Hookによる日本語文体チェックの導入
+## D-006: T-005レビュー指摘への対応方針（days上書きの警告、SQLite変数上限、CancellationException）
 
-- 日付: 2026-08-15
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- AIエージェントが書くdocs/配下の日本語ドキュメントに、効果の中身を書かず「効く」の一語で済ませる、依頼のない対比構文で否定から書き始める、文末表現（ます・です等）が単調に連続する、といった癖が繰り返し出ていた。
-- CLAUDE.md/AGENTS.mdへ「この表現は使わない」と書き並べる対処は、会話が長くなるほど指示が薄まり効果が続かないことが外部記事（まつにぃ氏「AIの変な日本語、Hooksで撲滅しているお話」）でも報告されており、本リポジトリでも同種の問題が想定された。
+- T-005（永続化とインポート導線）のレビューで、ReviewerがMedium 1件・Low 3件・Nit 1件を検出した。
+  1. Medium/CONFIRMED: `days`テーブルが`date`のPRIMARY KEYで`INSERT OR REPLACE`（1日分の点列をまるごと置き換え）される設計になっているが、`segments`側は同じ上書き特性がdocs/progress.mdに明記されているのに対し、`days`（実際のGPS点列本体、アプリの主目的データ）側は未文書化・UI上の警告もない。同じ日を部分的にカバーする別ファイルを続けて取り込む等で、旧点列が復元不能な形で無警告に消えうる。
+  2. Low/PLAUSIBLE: `segments`削除の`IN`句がインポート対象日付数分の`?`プレースホルダを生成するが、Android標準SQLiteの`SQLITE_MAX_VARIABLE_NUMBER=999`を超えると（1回のインポートが約2.7年超に及ぶ場合）例外でトランザクション全体が失敗しうる。
+  3. Low/CONFIRMED: `TimelineViewModel`が`runCatching`で例外を捕捉しているが、`CancellationException`も無差別に`Result.failure`として扱ってしまい、構造化並行性のキャンセル伝播を壊すアンチパターンになっている。
+  4. Low/Nit/CONFIRMED: 日付をまたぐ区間の移動距離がどちらの日の`distance_meters`にも計上されない（点データ自体は正しく格納される、統計表示のみの過小評価）。
+  5. Nit/PLAUSIBLE: 点・セグメントとも0件のインポートが無警告で「成功」表示される。
 
 ### 決定
-- `.claude/hooks/ja-style-check.py`を新設し、PostToolUse Hook（`Write`/`Edit`、`.md`ファイル対象）として`.claude/settings.json`に登録した。
-- 検査対象は書き込み単位で完結させ、`Write`時は`tool_input.content`全体、`Edit`時は`tool_input.new_string`のみを見る。ファイルをディスクから読み直して全体を再検査する実装は採用しなかった（後述）。
-- NGパターンは`.claude/ja-style-rules.json`に外出しし、パターンごとに書き直し例（グッドパターン）を対で持たせた。該当時は`exit code 2`でエージェント自身へ差し戻し、単語だけの置き換えは禁止、該当文全体の書き直しを求める。
-- 初期ルールは「効く」の一語で済ませる曖昧な効果表現、依頼されていない対比構文（否定から入る言い回し）の2件（正規表現による検査）と、文末表現3文以上連続（書き込み単位のテキストを集計するスクリプト判定）の1件に絞った。
+- 1・2・3は本D-006に基づき修正する（T-005bとして起票）。
+  1. `TimelineRepository.importTrack`が、書き込み対象の日付のうち既存`days`行を持つものを検出し、呼び出し元（`TimelineViewModel`）へ「上書きされる日数」を返せるようにする。`ImportScreen`は、上書きが発生する場合はインポート実行前に確認ダイアログ（「N日分の既存データを置き換えます」）を表示し、ユーザーの明示的な確認を経てから実行する。
+  2. `segments`削除の`IN`句を、日付集合を900件程度ずつのチャンクに分割して複数回`delete`を発行する形に修正する。
+  3. `runCatching`を`try/catch`に置き換え、`CancellationException`は再送出（`throw`）し、それ以外の`Exception`のみ`ImportUiState.Error`へ変換する。
+- 4・5は実害が軽微（統計表示の誤差、機能的な破綻なし）と判断し、今回は対応せずdocs/tasks.mdのバックログへ記録するに留める。
 
 ### 理由
-- Hookは「AIの動作の節目にスクリプトを差し込める」という既存機構であり、判定ラダー（AGENTS.md）の3〜5段目（標準ライブラリ・既存の成熟した手法・インストール済み依存関係で足りるか）に沿って新規外部依存を追加せずPython標準ライブラリのみで実装した。
-- 語だけ置換すると同じ問題が別の語形で残る、という元記事の指摘に倣い、文全体の書き直しを求める設計にした。
-- 検査対象を書き込み単位に絞ったのは、当初ファイル全体を再検査する実装で試したところ、docs/agents.md・docs/decisions.mdへの追記時に、今回の編集と無関係な既存文中の正当な用法（例:「HooksではなくsubagentStatusLineを採用した」）まで大量に誤検出したため。書き込み単位に絞ることで、今回書いた内容だけが検査対象になる。
-- ルールを`.claude/ja-style-rules.json`という単一ファイルへの追記のみで拡張できる構成にし、Skillとして切り出す・ルール登録を自動化する仕組みは今回は見送った（初期ルールが3件のみで、専用の登録経路を作るほどの再利用実績がまだ無いため。件数が増えた場合はSkill化を再検討する）。
-- D-016で「project001には機械判定可能なチェックが存在しない」ことをStop Hook不採用の根拠にしたが、日本語文体の検査は正規表現と文末集計という機械判定が可能であり、その前提には抵触しない（対象はコードではなくAI生成ドキュメント）。
+- 1はAGENTS.md原則8「データ損失を防ぐエラーハンドリング」に直接該当し、アプリの主目的データ（GPS軌跡そのもの）が対象であるため必須修正とする。単なるドキュメント追記ではなく、ユーザーが実際に気づける確認ダイアログとする方が「データ損失を防ぐ」という原則の趣旨に沿う。
+- 2は複数年分をまとめてインポートする典型的なTakeout一括エクスポートで実際に発生しうる（要件「大量の位置情報を扱っても...動作が重くならない」の裏側にある正当な入力サイズ）ため、Lowではあるが修正コストが低く、後回しにする理由がない。
+- 3はKotlin公式ガイドラインが明示的に警告するアンチパターンであり、修正コストが1箇所の書き換えで済むため、今のうちに直す。
+- 4・5はREVIEW.mdの過剰指摘抑制ルール（正確性・要件充足・セキュリティ・データ整合性に影響しないものはLow/Nitに分類し必須修正としない）に該当する。4は点データ自体に影響しない統計表示のみ、5はユーザーが結果画面で0件と気づける（意図的な機能欠落ではない）。
 
 ### 影響
-- docs/agents.mdのHook構成に「PreToolUse/PostToolUseはlint/ビルド連携等、対象コードが存在しないため不採用」という既存の記述（D-005/D-006）と矛盾しないよう、今回追加したPostToolUse Hookの対象は「AIが生成するドキュメント」であり「アプリケーションコードのlint/ビルド」ではない点を明記した。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、このHookとルールファイルが引き継がれる。個別アプリ側でルールを追加・調整する場合は`.claude/ja-style-rules.json`を編集すればよい。
-- 書き込み単位に絞っても、新規に書いた文が対比構文ルールへ正当な理由で一致するケースは残る（誤検知はゼロにならない）。`exit code 2`は書き込み自体を止めるものではなく、エージェントへの差し戻しに留まるため、最終的に書き直すかどうかはエージェントの判断に委ねる設計とした。
+- 以降、`TimelineRepository`の書き込みAPIは「上書き対象の検出」を呼び出し元へ返す設計になる。T-006以降でインポート導線に手を加える場合はこの契約を維持する。
 
 ---
 
-## D-018: SubagentStop/SessionEnd Hookによる記録漏れの機械的検知
+## D-007: T-006レビュー指摘への対応方針（座標変換のスケール誤り、UIスレッドでのDP同期実行、Paint/Pathの再利用）
 
-- 日付: 2026-08-15
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- D-017（PostToolUse Hookによる日本語文体チェック）の実装・検証を機に、project001の他のHook候補についてユーザーと調査・検討した。docs/tasks.md・docs/progress.md・docs/decisions.mdへの記録は運用ルール（AGENTS.md/CLAUDE.md、docs/agents.mdの参照ドキュメント表）として定めているが、これまでは指示文のみに依存しており、実際に記録されたかを機械的に確認する仕組みは無かった。
-- トークン削減の観点で評価した結果、記録漏れを検知しないと次回セッション開始時にManagerが状態を再構築する必要が生じ、CLAUDE.md/AGENTS.mdへのルール追記（常時ロードで確実にコストがかかる）よりも、発火時のみコストが発生するHookベースの検知の方が、再構築コストの回避という点で費用対効果が高いと判断した。
+- T-006（地図上のルート表示＋期間指定）のレビューで、Reviewerが3件の重要な問題を検出した。
+  1. High/PLAUSIBLE: `RouteOverlayView`がワールド座標→画面座標変換に使う`metersPerPixel`を`MapLibreMap.projection.getMetersPerPixelAtLatitude(target.latitude)`から取得しているが、この値は緯度に応じて`cos(緯度)`倍で変動する「実世界距離」基準のスケールである。一方`Mercator.longitudeToX/latitudeToY`が返すワールド座標はWebメルカトル**投影**座標（緯度に依存しない一定スケールでMapLibre自身が描画に使う空間）であり、両者を単純に組み合わせると赤道以外（日本を含む）でルート線が実際の地図・GPS軌跡から系統的にズレる（例: 北緯35.68度で約1.23倍）。地図上へのルート表示という要件の中核が満たされない。
+  2. High/CONFIRMED: `Simplifier.simplify`（Douglas-Peucker簡略化）が`maxPointCount`引数なし（無制限）で、`OnCameraMoveListener`のコールバック内、すなわちUIスレッド上で同期的に呼ばれている。期間全体の未簡略化点列（数万〜十万点規模になりうる）に対し、カメラのease中・ピンチズーム中に何度も再実行されうり、ANR・カクつきのリスクがある。
+  3. Medium/CONFIRMED: `RouteFrameRenderer`の`drawRoute`/`drawMarker`/`drawDateTimeText`/`drawAttribution`が呼び出しのたびに新しい`Paint`・`Path`オブジェクトを生成しており、`onDraw`のたびにアロケーションが発生する（Android Lintの`DrawAllocation`が警告する典型的アンチパターン）。T-008（動画書き出し）で同じ`RouteFrameRenderer`を数百〜数千フレーム分連続描画する設計であるため、その際に問題が深刻化する。
+- 加えてLow 2件（週ラベルの年またぎテスト未追加、fitBoundsが実質同一地点の複数点で極端ズームになりうる可能性）を検出したが、影響が軽微なためバックログへ記録するに留める。
 
 ### 決定
-- `.claude/hooks/subagent-doc-check.py`を新設し、SubagentStop Hookとして`.claude/settings.json`に登録した。`agent_type`が`developer`の場合のみ、`git status --porcelain -- docs/progress.md`で未コミットの変更有無を確認し、無ければ`exit code 2`で差し戻す。
-- SessionEnd Hookを`.claude/settings.json`に新設した。`git status --porcelain`（リポジトリ全体）に変更があれば、docs/progress.md・docs/tasks.mdへの記録漏れがないか確認するようリマインドする。変更が無ければ無反応。
-- 提案時に検討した4案（SubagentStop、SessionEnd、PreToolUseによる追記専用ルールの強制、Notificationによる承認ログ）のうち、トークン削減効果が最も大きいと評価した上位2案（SubagentStop、SessionEnd）のみを採用した。PreToolUse案・Notification案は見送り、必要性が具体化した時点で再検討する。
+1. `RouteOverlayView`の`metersPerPixel`計算を、緯度に依存しない投影空間のスケールへ修正する。最小修正として`getMetersPerPixelAtLatitude(0.0)`（赤道固定、`cos(0)=1`により投影メートル/ピクセルと一致する）を使う。
+2. `RouteOverlayView`の`Simplifier.simplify`呼び出しに妥当な`maxPointCount`（画面幅ピクセル数のオーダー、例: 2000〜4000点程度）を渡し、無制限の入力サイズでの実行を防ぐ。DP自体をUIスレッド外（`Dispatchers.Default`のコルーチン等）へ逃がす非同期化は、実装コストと必要性を見て可能なら行うが、必須はmaxPointCount指定とする。
+3. `RouteFrameRenderer`が使う`Paint`・`Path`オブジェクトを呼び出しのたびに生成せず、キャッシュ（`Style`データクラスに`by lazy`で持たせる、またはインスタンス変数として使い回す）する設計に変更する。
+4. Low 2件（週ラベルの年またぎテスト、fitBoundsの実質同一地点フォールバック）は今回対応せず、docs/tasks.mdのバックログへ記録する。
 
 ### 理由
-- 判定ラダー（AGENTS.md）の3〜5段目に沿い、Python標準ライブラリ（subagent-doc-check.py）とシェル標準コマンド（SessionEnd）のみで実装し、新規外部依存は追加していない。
-- SubagentStopの対象を`developer`のみに絞ったのは、docs/agents.mdの参照ドキュメント表が「docs/progress.md: 作業履歴、次回開始位置（Developerが記録）」と明記しており、Reviewer/Planner/Researcherには同じ記録義務が定義されていないため。義務が無いAgentに対して誤って差し戻すことを避けた。
-- SessionEndは「未コミットの変更があるか」というリポジトリ全体を対象にした緩い判定に留めた。docs/progress.md・docs/tasks.md単体の差分判定にしなかったのは、SubagentStopで既にDeveloper単位の判定を行っており、SessionEndは「PreCompactを経ずに終了するケースを補完する最後の安全網」という位置づけで十分なため（判定ラダー1: そもそも厳密な判定が必要か、を再確認した結果）。
-- PreCompact不採用理由（D-016、機械判定可能なチェックが存在しない）と同様、SubagentStop/SessionEndも`git status`という機械判定可能なチェックであり、Stop Hook不採用の前提（LLMの判断が必要で機械判定できない）には抵触しない。
+- 1・2はいずれも要件の中核（地図上へのルート表示、大量データでも実用的な速度で動作すること）に直結し、AGENTS.md原則8「手を抜かない対象」に該当するため必須修正とする。
+- 3はT-008で同じレンダラーを高頻度に再利用する設計上の前提があり、後回しにするとT-008側の実装・パフォーマンスチューニングがより困難になる（根本原因を今直す方が手戻りが少ない）。
+- Low 2件はREVIEW.mdの過剰指摘抑制ルールに該当し、クラッシュ耐性は確認済み・影響が特定の稀なケースに限定されるため、今は対応を見送る。
 
 ### 影響
-- docs/agents.mdのHook構成節に、SubagentStop/SessionEndの説明を追加した。「以下2つのHookを導入している」という古い記述（SessionStart/PreCompactのみを指す）を、Hook種別が増えたことに合わせて修正した。
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、この2つのHookが引き継がれる。
-- SubagentStopはDeveloper subagentがdocs/progress.mdへ一度も書き込まずに完了しようとした場合、常に差し戻される。意図的にdocs/progress.md更新が不要な軽微な作業（例: タイポ修正のみ）でも差し戻される可能性があり、その場合はAgent側の判断で該当作業の記録を簡潔に追記して解消する運用とする。
+- 以降、地図オーバーレイの座標変換ロジックを変更する場合は「投影空間で一定スケールを使う」という前提を維持する。
+- `RouteFrameRenderer`のPaint/Pathキャッシュ設計は、T-008の動画書き出し実装でもそのまま再利用する。
 
 ---
 
-## D-019: Claude Code公式仕様に基づく開発基盤監査、taste-skill 13件の撤去
+## D-008: T-007レビュー指摘への対応方針（再生中シークの競合、trimByProgressの二重計算）
 
-- 日付: 2026-08-15
+- 日付: 2026-08-19
 - 状態: 採用
 
 ### 背景
-- project001を「Claude Codeが効率的・安定的・低コストで開発を進められる再利用可能な開発基盤」として保つため、ユーザーの依頼によりCLAUDE.md/AGENTS.md/.claude/agents/.claude/skills/hooks/docs/Capability Layer/レビューフローを、2026年時点のClaude Code公式仕様（CLAUDE.md/rules/skills/sub-agents公式ドキュメント）と2026年の実践知見に照らして監査した。
-- 監査の結果、最も実害が明確な問題として、D-017で「確認プロセスを経ない例外追加」と自認したまま残っていた`Leonxlnx/taste-skill`由来のSkill13件（デザイン/UI系、計6670行）が挙がった。docs/agents.md「採用しなかったAgent」節が既に「project001自体はアプリケーションコードを持たないテンプレートであり、UIレビューの対象が存在しない」と明記しており、UI専用Skillの導入はこの既存方針と矛盾していた。1行説明は毎セッション常時コンテキストに乗っており、CLAUDE.mdの「Skillsは再利用可能な具体的ワークフローが確認された時点で追加する」という原則にも反していた。
+- T-007（アニメーション再生と速度制御）のレビューで、Reviewerが以下を検出した。
+  1. Medium/PLAUSIBLE: `PlaybackController.seekTo()`が`play()`/`setRoute()`/`setSpeedMode()`と異なり再生ループを一時停止しないため、再生中にシークバーをドラッグすると、ユーザーのシーク値と16msごとに進む再生ループの自動更新値が同じ`progress`を奪い合う。
+  2. Low/CONFIRMED: `RouteOverlayView.onDraw`が`currentPositionAtProgress`と`draw`内部の`drawRoute`でそれぞれ独立に`trimByProgress`（`FloatArray`確保＋`arraycopy`、最大3000点分）を計算しており、毎フレーム2回の無駄な計算が発生している。T-008で同じ`RouteFrameRenderer`のAPIを動画フレームごとに呼ぶ設計のため、この無駄はT-008にも伝播する。
+  3. Low/PLAUSIBLE: 同一データ時刻に複数点（異なる位置）がある場合、`binarySearch`のタイブレークが不定で、その区間の再生中にマーカーが実際の移動と無関係に固まって見える可能性がある。
+  4. Nit/CONFIRMED: `buildAuto`の`alpha`/`beta`に負値の検証が無い（現状UIから到達する経路が無く実害なし）。
+  5. PLAUSIBLE（設計トレードオフ、バグではない）: 手動モード最低速度(x60)と長期間選択（月/年）の組み合わせで、再生に実時間で数日かかりうる。D-002が「ユーザーが希望すれば厳密な等倍速に近い速度も選べるように」と明記した意図的な設計範囲内。
 
 ### 決定
-- `.agents/skills/`（Skill本体13件）、`.claude/skills/`（Claude Code向けシンボリックリンク13件）、`skills-lock.json`を削除した。
-- CLAUDE.mdの「Skills / Capability Layer」節を「現時点で導入しているSkillはない」に戻し、今回の撤去の経緯を1文で追記した。
-- 監査で洗い出した残りの論点（Auto Memoryとdocs/の役割分担、`.claude/rules/`の採用要否、README.mdの記述更新、Capability Layer未使用状態の扱い）は、この決定とは切り離し、別途ユーザーとの合意を経てから対応する。
+- 1・2はT-007bとして修正する。
+  1. `PlaybackController.seekTo()`の冒頭で再生ループを停止する（`pause()`と同等の処理、`playbackJob?.cancel()`）。シーク後に再生を継続したい場合は、呼び出し元（UI）がシーク完了時に明示的に`play()`を呼ぶ設計とする（一般的な動画プレーヤーのシークバーUXに合わせる）。
+  2. `RouteFrameRenderer`のAPIを、`trimByProgress`の計算結果を1回だけ行い、ルート描画と現在位置マーカーの両方で使い回す形にリファクタする（`currentPositionAtProgress`と`draw`が独立に計算する現状の重複を解消する）。
+- 3・4・5は今回対応せず、docs/tasks.mdのバックログへ記録するに留める。
 
 ### 理由
-- 判定ラダー（AGENTS.md）1段目（そもそも必要か）に立ち返ると、project001自体にUIコードが存在しない以上、UI専用Skillは「再利用可能な具体的ワークフロー」の確認を経ておらず、そもそも必要性が無い。
-- 公式ドキュメントで確認した`disable-model-invocation: true`（常時ロードされる説明文をコンテキストから外し、`/skill-name`による手動起動のみ残す設定）という選択肢も検討したが、個別アプリ側で必要になった時点で`npx skills add`により再導入すればよく、「project001自体はいずれのツールにも依存しない」という既存のCapability Layerの原則（本ファイル「Skills / Capability Layer」節冒頭）とも整合するため、無効化ではなく削除を選んだ。
-- 半端に残す（無効化のみ）と、次回以降のセッションでなぜ13件のSkillディレクトリが存在するのに使われていないのかという文脈が失われやすく、削除の方がリポジトリの状態と方針の記述が一致し理解しやすい。
+- 1はユーザーが実際に触れる操作（シークバードラッグ）で発生し、UXとして明確に破綻する（値の奪い合いでスライダーが震える等）ため、要件「再生中の現在位置・日時などの表示」の一部として必須修正とする。
+- 2は現状クラッシュ等の実害はないが、T-008で動画フレームごとに同じ無駄が発生する設計になっており、今のうちに直す方が手戻りが少ない（T-006bでPaint/Pathキャッシュを先んじて直した判断と同じ理由）。
+- 3はGPSデータの実際の重複頻度が不明で、影響も「マーカーが一瞬固まる」程度に限定的（アプリのクラッシュやデータ破損はない）。4は現状到達不能なコードパス。REVIEW.mdの過剰指摘抑制ルールに照らし、いずれも今は対応を見送る。
+- 5は意図的な設計判断（D-002）の範囲内であり対応不要。
 
 ### 影響
-- 本リポジトリを雛形として作成される新規プロジェクトすべてから、taste-skill 13件が引き継がれなくなる。個別アプリでUI関連のSkillが必要になった場合は、そちらのリポジトリで`npx skills add`等により追加する。
-- CLAUDE.mdの記述が「現時点で導入しているSkillはない」という初期状態（D-001〜D-016時点の記述）に戻る。D-017・D-018の本文（PostToolUse/SubagentStop/SessionEnd Hookの追加）自体は撤回しない。
+- 以降、`PlaybackController`のシークは「シーク時に自動停止」という前提でUIを設計する。
+- `RouteFrameRenderer`のtrim計算共有化は、T-008の動画書き出し実装でもこの設計を踏襲する。
 
 ---
 
-## D-020: `.claude/rules/`（path-scoped rules）の不採用
+## D-009: T-008スパイク検証の結果（静止画+BitmapOverlayが機能することをMedia3ソースコードで確認）
 
-- 日付: 2026-08-15
-- 状態: 却下
-
-### 背景
-- T-020の監査で、ユーザーから「path-specificなルールを`.claude/rules/`へ分離できないか」という観点が挙がった。公式ドキュメント（code.claude.com/docs/en/claude-md）を確認した結果、`.claude/rules/`配下のファイルは`paths:`frontmatterを付けて初めてファイル種別ごとの条件ロードになり、`paths:`が無い場合はCLAUDE.mdと同一優先度で毎セッション無条件にロードされる（トークン削減効果はゼロ）ことが判明した。
-
-### 決定
-- project001自体には`.claude/rules/`によるpath-scoped ruleを新設しない。CLAUDE.md/AGENTS.mdの現行構成を維持する。
-
-### 理由
-- path-scoped rulesが効果を発揮するのは「ファイルの種類・ディレクトリによって適用したい規約が変わる」ケース（例: `src/api/**/*.ts`にだけ適用する規約）である。project001自体はアプリケーションコード（src/等）を持たないテンプレートであり、ファイル種別ごとに振る舞いを変えたい対象が存在しない。
-- 現行のCLAUDE.md（37行）+AGENTS.md（52行、import経由で常時ロード）は公式の目安（200行未満）に対して十分小さく、`.claude/rules/`へ分割する動機（CLAUDE.mdの肥大化回避）自体が現時点で発生していない。
-- 仮に`.claude/rules/`へ移してもpathsを指定しない限り常時ロードされる点は変わらないため、ファイルを分けるだけの移動はAGENTS.mdの判定ラダー1段目（そもそも必要か）で不採用となる。
-
-### 影響
-- 個別アプリのリポジトリ（project001から作成された派生リポジトリ）では、フロントエンド/バックエンド等でディレクトリごとに規約が異なるケースが生じうるため、そちら側で`.claude/rules/`（`paths:`指定）を採用する余地は残る。本決定はproject001自体（テンプレート）に限定する。
-
----
-
-## D-021: Capability Layer Tier1（Agent-Reach/Code Review Graph/Context7/GitHub CLI）をTier2へ格下げ
-
-- 日付: 2026-08-15
+- 日付: 2026-08-20
 - 状態: 採用
 
 ### 背景
-- T-020の監査で、Capability LayerのTier1に分類していた4件（Agent-Reach/Code Review Graph/Context7/GitHub CLI）が、本セッションを含む複数セッションのSessionStart Hook出力で一度も`available`にならず、常に`unavailable`のままであることを確認した。docs/context7.mdは元々ctx7のサブコマンド仕様を「本環境では未検証」と明記しており、Code Review Graphのみ過去（T-012のレビューループ）に一時的な検証用インストールで動作確認された実績はあるが、恒常的な統合環境ではない。
-- Tier1（統合済み: Agentの振る舞いに組込み）は、`.claude/agents/*.md`・REVIEW.md本文に「利用可能なら優先利用する」という条件分岐を常設することを意味する。一度も検出されない状態でこの分岐を持ち続けることは、実質的に使われない条件分岐の記述コストだけが残る状態であり、Tier1の定義（統合済み）と実態が乖離していた。
+- T-008のタスク指示は、D-002が決めた動画書き出し方式（地図スナップショット静止画を`MediaItem`として`Transformer`へ渡し、`BitmapOverlay`の`getBitmap(presentationTimeUs)`で毎フレームの進捗・現在地・日時・地図帰属表示を重ねる）について、「静止画入力でTransformerが同一フレームを最適化・重複排除し、オーバーレイが毎フレーム更新されない可能性がある」という懸念を明記し、実装開始前に最小限のスパイク実装で確認することを求めていた。
+- 本セッションの環境にはAndroid実機・エミュレータが無い（T-002以降一貫した既知の制約、docs/progress.md各エントリに記録済み）。そのため「実際にTransformerを実行して動画を書き出し目視確認する」という一般的な意味でのスパイクは実施不可能。代わりに、Maven Centralから`androidx.media3:media3-transformer:1.11.0`・`media3-effect:1.11.0`・`media3-common:1.11.0`のaarを取得し（T-002がMapLibreのaarを`javap`で逆コンパイルして確認した手法と同じ方針）、加えて`androidx/media`のGitHub公開リポジトリ（`github.com/androidx/media`、Media3の実装そのもの）から該当クラスの実際のソースコードを直接読んで検証した。
 
-### 決定
-- Agent-Reach/Code Review Graph/Context7/GitHub CLIの4件をTier1からTier2（検出のみ、Agentの振る舞いには未組込み）へ格下げした。
-- `.claude/agents/planner.md`・`developer.md`・`reviewer.md`・`researcher.md`・REVIEW.md・docs/research-workflow.mdから、これら4件を「利用可能なら優先利用する」とする条件分岐の記述を削除し、Read/Grep/Bash/WebFetch/WebSearchのみによる調査・実装・レビュー手順に統一した。
-- docs/agent-reach.md・docs/code-review-graph.md・docs/context7.mdは削除せず、「現在Tier2」の注記を追加した上でTier1昇格時の利用方針として保持した（検出・動作確認が取れた時点で`.claude/bootstrap.sh`を変更せずそのままTier1へ復帰できる）。
-- CLAUDE.md・docs/capability-layer.mdのTier表記述を実態に合わせて更新した。
+### 決定（スパイク検証で確認した事実）
+1. `ImageAssetLoader.queueBitmapInternal`は、読み込んだ1枚の`Bitmap`を`sampleConsumer.queueInputBitmap(bitmap, ConstantRateTimestampIterator(durationUs, frameRate))`へ渡す。`ConstantRateTimestampIterator`は`durationUs`・`frameRate`から一定間隔の`presentationTimeUs`列（0, 1/30秒, 2/30秒, ...)を生成し、同じ`Bitmap`オブジェクトが**フレーム数分だけ**個別の`presentationTimeUs`とともにVideoFrameProcessorへキューイングされる。すなわち「静止画1枚」であっても内部的には動画のフレーム数だけ個別に処理される設計であり、そもそも1フレームに最適化・重複排除される余地がない。
+2. `OverlayShaderProgram.drawFrame(inputTexId, presentationTimeUs)`は`BaseGlShaderProgram`から**キューイングされた各フレームごとに**呼ばれ、その中で`overlay.getTextureId(presentationTimeUs)`（`BitmapOverlay`実装では内部で`getBitmap(presentationTimeUs)`を呼ぶ）を毎回呼び出す。ここでの`presentationTimeUs`は決定1の個別フレームのタイムスタンプそのものであり、フレームごとに異なる値が渡る。
+3. `BitmapOverlay.getTextureId(presentationTimeUs)`は`getBitmap(presentationTimeUs)`の戻り値を`bitmap != lastBitmap || generationId != lastBitmapGenerationId`で前回描画時と比較し、異なる場合のみGLテクスチャを再アップロードする。`Bitmap.getGenerationId()`のJavadocは「changes whenever the bitmap is modified」であり、`Canvas`による描画を含むBitmapの変更で自動的に更新される（Java側から明示的に通知するAPIである旧`notifyPixelsChanged()`は現行SDK（`android-36`）には存在しない。実装時にこの呼び出しを試みてコンパイルエラーで判明した）。
+4. 以上（1〜3）より、`RouteBitmapOverlay.getBitmap`が毎フレーム異なる内容を描画したBitmap（同一インスタンスを使い回す場合も`Canvas`描画によりgenerationIdが変化する）を返す限り、Transformerの静止画入力パイプラインは実装計画（D-002）どおりに「毎フレーム更新されるオーバーレイ」として機能する。懸念されていた「同一フレームへの最適化・重複排除」は発生しない設計であることをソースコードレベルで確認した。
 
 ### 理由
-- AGENTS.mdの判定ラダー1段目（そもそも必要か）に照らすと、一度も動作確認が取れていない外部ツールへの「優先利用」という振る舞いをAgent定義ファイルに常設し続けることは、実態を伴わない記述であり、次回以降のセッションが「統合済みだが実際には使われたことがない」という状態を誤って前提にするリスクがある。
-- `.claude/bootstrap.sh`の検出対象・docs/agent-reach.md等の内容自体は変更していないため、削除ではなく格下げにより、実際にツールが検出された場合の再統合コストを最小に保っている（Tier2→Tier1の昇格手順は既存の「新しいCapabilityを追加する手順」をそのまま使える）。
-- Node.js/Python/PlaywrightがTier2である理由（project001自体に消費するタスクが無い）とは性質が異なるため、docs/capability-layer.mdのTier2表に「動作未検証」という別理由を明記し、混同を避けた。
+- 実機・エミュレータでの実行確認ができない環境制約下では、タスク指示が求める「最小限のスパイク実装での確認」の代替として、Media3本体の実装ソースコードを直接読み実際の処理フロー（フレームのキューイング→シェーダー描画→オーバーレイ取得の各段でpresentationTimeUsがどう伝播するか）を追跡することが、実行して目視確認する以上に確実な検証手段だと判断した（ソースコードはビルドされたバイナリそのものの挙動を規定するため、実行結果を観察するより高い確信度が得られる）。
+- D-003・T-005〜T-007bが繰り返し記録してきた「実機/エミュレータでの目視確認は環境制約により未実施」という既知の制約の範囲内で、可能な限り高い確信度の検証を行うという一貫した方針に従った。
 
 ### 影響
-- 本リポジトリを雛形として作成される新規プロジェクトすべてで、Agent-Reach等4件は当面Tier2（検出のみ）として引き継がれる。個別アプリのリポジトリで実際に動作確認が取れた場合は、そちら側でTier1へ昇格させてよい。
-- Researcherの調査フローは、Agent-Reachが検出・動作確認されるまでWebFetch/WebSearchのみで完結する（docs/research-workflow.md）。Developer/Reviewerの影響範囲確認・API仕様確認も同様にRead/Grep/Bashのみで完結する。
-- REVIEW.mdの検証パスの記述から、Code Review Graphの具体的なサブコマンド名（`impact --files`等）への言及がなくなった。詳細はdocs/code-review-graph.mdに委譲する。
+- D-002が決めた動画書き出し方式（静止画+BitmapOverlay）をそのまま採用し、代替方式（短尺無地動画の生成、MediaCodec+EGLでの手動フレーム描画）への切り替えは行わない。
+- 実際の動画ファイルを実機で再生し、フレームごとにルート進捗・現在地マーカー・日時が正しく変化することの最終確認は、実機/エミュレータが利用可能になった時点で行うことが望ましい（D-003以来の既知の制約の一部として残る）。
 
 ---
 
-## D-022: Auto Memoryとdocs/tasks.md・progress.md・decisions.mdの役割分担を明記
+## D-010: T-008レビュー指摘への対応方針（MediaStoreロールバック、snapshotタイムアウト、単一点ルートのエラー文言）
 
-- 日付: 2026-08-15
+- 日付: 2026-08-20
 - 状態: 採用
 
 ### 背景
-- T-020の監査で、Claude Code本体の標準機能であるAuto Memory（Claude自身が訂正・学習をリポジトリごとのMEMORY.mdへ自動記録し、毎セッション自動ロードする機能）の存在を確認した。project001のdocs/tasks.md・docs/progress.md・docs/decisions.mdは、Auto Memory登場前のD-001（2026-08-03）に由来する独自運用であり、両者の役割分担がどこにも明記されていなかった。
-- 役割分担が未整理のままだと、将来Auto Memoryがdocs/配下と類似の内容を書き始めた場合に二重管理になったり、逆にdocs/配下の運用をAuto Memoryへ安易に委譲する誤った変更が行われたりするリスクがある。
+- T-008（アニメーションの動画書き出し）のレビューで、ReviewerがMedium 3件を検出した。
+  1. `VideoOutput.saveToMediaStore`が`insert`後のコピー失敗・キャンセル時に、作成済みMediaStore行をロールバック（削除）する処理を持たない。キャンセル直後にコピーが完了間際だった場合、意図に反して動画がギャラリーへ残り続ける、あるいはI/Oエラー時に`IS_PENDING=1`のまま孤立した行が残りうる。
+  2. `VideoExporter.awaitSnapshot`が`MapLibreMap.snapshot()`のコールバックを無期限に待つが、`MapView`が`started`状態でない場合はコールバックが一切呼ばれない（MapLibre側の仕様、逆コンパイルで確認済み）ため、タイムアウトが無いと進捗0%のまま無期限にスタックしうる。
+  3. 選択期間のルートが点1つのみの場合、`PlaybackTimeline`の総再生時間が0になり`VideoExporter.export`の`require`が投げる内部的な例外メッセージ（"durationMsは正の値である必要があります: 0"）がそのままユーザーへ表示される。
 
 ### 決定
-- docs/agents.mdに「Auto Memoryとの役割分担」節を新設し、Auto Memory（個人的な気づき・訂正の自動学習、非公式）とdocs/配下（タスク状態・作業履歴・設計判断の公式な記録、PR経由でコミット、REVIEW.md・Hookで一貫性を補強）の違いを表で明記した。
-- docs/配下の運用を縮小・簡略化する変更、Auto Memoryへ委譲する変更は行わない。
+- 3件ともT-008bとして修正する。
+  1. `saveToMediaStore`全体を`try/catch`で囲み、失敗時は`resolver.delete(itemUri, null, null)`でロールバックする。呼び出し側（`TimelineViewModel.exportVideo`）でも、コピー中に`CancellationException`が発生した場合は同様に発行済みの`itemUri`を削除する。
+  2. `awaitSnapshot`を`withTimeout(...)`（妥当な秒数、例えば10秒程度）で包み、タイムアウト時は`ExportUiState.Error`へ変換する。
+  3. エクスポート開始前（`exportVideo`冒頭、または「動画として保存」ボタンの`enabled`条件）で選択期間のルート点数が2未満の場合を検出し、「この期間はデータが少なく動画を作成できません」等のユーザー向けメッセージを直接`ExportUiState.Error`に設定する（`VideoExporter`内部の`require`例外をそのまま露出させない）。
 
 ### 理由
-- Auto MemoryはClaudeの裁量で書かれる非公式なノートであり、project001が重視するチーム共有・PRレビューを経た正式な記録（AGENTS.md設計原則、REVIEW.mdの敵対的検証）とは性質が異なる。置き換えると、設計判断の追跡可能性（docs/decisions.mdのADR形式）が失われる。
-- 一方で役割分担を明記しないままだと、次回以降のセッションがAuto Memoryとdocs/配下のどちらに何を書くべきか迷い、重複記録や記録漏れが生じる可能性がある。ドキュメント新設ではなく既存のdocs/agents.mdへの節追加に留めたのは、判定ラダー（AGENTS.md）2段目（既存コードベースに同等の実装があるか）に照らし、新規docsファイルを作るほどの分量ではないため。
+- 1はAGENTS.md原則8「データ損失を防ぐエラーハンドリング」に該当し、ユーザーの意図（キャンセル）に反してファイルが残る・孤立行が溜まり続けるのは看過できない。
+- 2・3はいずれも実装コストが低く（`withTimeout`1箇所、点数チェック1箇所）、ユーザー体験に直接関わるため今のうちに直す。
 
 ### 影響
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、この役割分担の説明が引き継がれる。
-- T-020監査で洗い出した4項目（taste-skill撤去、README修正、`.claude/rules/`不採用記録、Capability Layer Tier2格下げ、Auto Memory役割分担）がすべて完了した。
+- 以降、`VideoExporter`/`VideoOutput`のAPIを変更する場合も、この「失敗・キャンセル時のロールバック」「無期限待機の禁止」「内部例外をユーザー向け文言に変換する」という3方針を踏襲する。
 
 ---
 
-## D-023: Claude Code向けMarkdownの構成・書式監査
+## D-011: MapLibre SDKが自身のマニフェストで宣言する位置情報権限（ACCESS_FINE/COARSE_LOCATION）をマニフェストマージで除外する
 
-- 日付: 2026-08-15
+- 日付: 2026-08-20
 - 状態: 採用
 
 ### 背景
-- ユーザー依頼により、CLAUDE.md/AGENTS.md/REVIEW.md/docs/.claude/agents配下の全Markdownを対象に、Claude Codeの理解精度とコンテキスト効率を両立する構成・書式へ最適化する監査を行った。設計思想（Capability Layer、Agent構成、開発フロー、レビュー方針）は変更せず、構成・内容・書式のみを対象とした。
+- T-009（仕上げ）で`aapt dump badging`により生成APKのマニフェストを確認したところ、本アプリの`AndroidManifest.xml`には一切記載していない`android.permission.ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`が最終マニフェストに含まれていることが判明した。原因を調査したところ、依存に含めているMapLibre Native Android SDK自身のマニフェストが、任意機能である現在地表示（LocationComponent、本アプリは未使用）向けにこれらの権限を宣言しており、Android Gradle Pluginのマニフェストマージによって本アプリのマニフェストへ自動的に統合されていた。
+- 本アプリのコード（`app/src/main`全体）には`android.location.*`・MapLibreの`LocationComponent`・`FusedLocationProvider`等の呼び出しが一切無いことをgrepで確認済み（端末の現在地を取得する機能はそもそも存在しない。インポートしたタイムラインJSON内の過去の位置情報を可視化するのみ）。
 
 ### 決定
-- docs/agents.mdの「Hook構成」節を、Hookごとの`###`見出し＋箇条書きへ再構成した。従来は1つのHookの説明が1行の長大な文（最長で約800文字）に詰め込まれており、走査性が低かった。情報の削除は行っていない。
-- CLAUDE.mdの「Skills / Capability Layer」節前半（Capability Layerの説明）を、密な1段落から箇条書きへ再構成した。Skills段落は、撤去理由の詳細（D-019に既出）をCLAUDE.md側では圧縮し「D-019参照」に委ねた。
-- REVIEW.mdの「検証パスの判定」節、過剰指摘抑制ルールの長大な1段落を、除外条件3件を箇条書きに分離する形へ再構成した。
-- docs/agent-reach.md・docs/context7.mdの「フォールバック方針」から、docs/capability-layer.mdの一般原則（「あれば使う、なければ今まで通り」）と同一文言の再掲を削除し、参照に一本化した。
+- `AndroidManifest.xml`に`xmlns:tools`を追加し、`<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />`・同`ACCESS_COARSE_LOCATION`をマニフェストマージ除外として明示的に宣言する。
+- `ACCESS_NETWORK_STATE`/`ACCESS_WIFI_STATE`/`WAKE_LOCK`（同じくMapLibre由来、地図タイルのネットワーク取得に関連する「normal」権限でランタイム許可プロンプトを伴わない）は変更しない。
 
 ### 理由
-- 公式ドキュメント（code.claude.com/docs/en/claude-md）の「Structure: use markdown headers and bullets to group related instructions. Claude scans structure the same way readers do」という指針に沿い、密な段落を見出し・箇条書きへ分解した。情報量は変えず、走査性のみを改善している。
-- CLAUDE.md/AGENTS.mdは公式の目安（200行未満）に対して合計94行と十分小さく、行数増加を許容しても常時ロードコストは低い。一方docs/agents.md等はオンデマンドロードのため、多少の行数増加より理解精度を優先した。
-- docs/agent-reach.md・docs/context7.mdの重複削除は、`.claude/skills`のような常時ロードコストではなく、複数ファイルに同一文言が存在すること自体の保守コスト（ツール仕様変更時に複数箇所を直す必要がある）を下げる目的。docs/capability-layer.mdの「ツール固有の仕様は専用docsにのみ記載し複製しない」という既存原則の逆方向（一般原則をツール固有docsに複製しない）にも当てはまる。
-- docs/decisions.md・docs/progress.md・docs/tasks.mdは対象から除外した。新しいエントリを末尾/先頭に追加する記録フォーマットの継続的な履歴であり、過去エントリの書式統一・要約はリポジトリの意思決定・作業履歴の追跡可能性を損なうため。
+- 本アプリは未使用の「dangerous」権限（ランタイム許可プロンプトを伴う）をAPKへ含めるべきではない。ユーザーが実際には求められていない位置情報アクセスをインストール時のパーミッション一覧やストア掲載情報で目にすることは、要件が明記する「位置情報データを端末内で完結させる」という設計意図（docs/decisions.md D-002決定4）とも整合しない不要なプライバシー面の懸念であり、AGENTS.md原則8「手を抜かない対象」のセキュリティに隣接する事項として対応した。
+- 除去は`tools:node="remove"`という標準的なマニフェストマージ機構のみで完結し、アプリの挙動（地図表示・タイル取得等）に一切影響しない（実際に`aapt dump badging`で除去後もビルド成功・地図関連の`INTERNET`等の権限は保持されることを確認済み）。
 
 ### 影響
-- 本リポジトリを雛形として作成される新規プロジェクトすべてに、再構成後の書式が引き継がれる。
-- 情報の追加・削除は最小限（重複2箇所の削除のみ）で、既存の参照リンク・D番号・ファイルパスはすべて維持している。
+- 将来MapLibre側のLocationComponent機能（現在地の青い点表示等）を使う要件が追加された場合、まずこの2行の削除（`tools:node="remove"`除去）とランタイム許可リクエストの実装が必要になる。
+- 実機/エミュレータでの動作確認は本開発環境では未実施のため、除去後も地図タイル取得・地図表示自体に影響が無いことは`aapt dump badging`によるマニフェスト確認・ビルド成功の確認に留まる（D-003以来の既知の制約）。
+

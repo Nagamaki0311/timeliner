@@ -15,35 +15,37 @@
 
 | ID | タスク | 優先度 | 状態 | 担当エージェント | 備考 |
 |----|--------|--------|------|------------------|------|
-| T-001 | 長期開発用AI開発環境の整備（tasks/progress/decisions） | 高 | 完了 | claude | docs配下に3ファイルを作成し、CLAUDE.mdに参照ルールを追加 |
-| T-002 | project001を共通AI開発エージェント用テンプレートへ転換 | 高 | 完了 | claude | CLAUDE.mdに「プロジェクトの役割」「トークン効率化ルール」を追加。個別アプリの仕様・コードは保持しない方針を明記（D-002参照） |
-| T-003 | ponytail（DietrichGebert/ponytail）のコード品質ルールを導入 | 中 | 完了 | claude | AGENTS.mdの内容をCLAUDE.mdに「コード品質ルール（Ponytail）」として統合（D-003参照） |
-| T-004 | AI開発OS化: Manager導入とドキュメント/Agent構成の整理 | 高 | 完了 | claude | CLAUDE.mdを大幅簡潔化し、Manager役割（このセッション自身）を明記。docs/agents.mdを新設しAgent構成とPonytail原則を集約（D-003の内容を移設）（D-004参照） |
-| T-005 | SessionStart/PreCompact Hookの導入 | 中 | 完了 | claude | .claude/settings.jsonを新設。tasks.md/progress.mdの自動表示と圧縮前リマインダーを1行shellコマンドで実装（D-005参照） |
-| T-006 | AI開発OS全体レビュー（重複排除・Hook環境検証） | 高 | 完了 | claude | CLAUDE.mdのAgent説明重複を除去、Manager-Hook接続を明文化、Hook環境依存性を文書化（D-006参照） |
-| T-007 | Agent別モデル最適化（Model Routing）の導入 | 中 | 完了 | claude | Planner=opus/Developer・Reviewer=sonnetに固定。軽量レビューはAgent呼び出し時のmodelパラメータ上書きで対応（D-007参照） |
-| T-008 | ルートAGENTS.md新設、CLAUDE.mdとの責務分離 | 高 | 完了 | claude | 新7原則とPonytailを統合したAGENTS.mdを新設。CLAUDE.mdはClaude Code固有設定のみに縮小し@AGENTS.mdをimport（D-008参照） |
-| T-009 | Agent-Reach対応（Optional Dependency・Researcher追加） | 高 | 完了 | claude | researcher Agentを新設し、Agent-Reachを検出できれば優先利用・不可なら自動フォールバックする疎結合設計を実装。docs/agent-reach.md・docs/research-workflow.mdを新設（D-009参照） |
-| T-010 | レビュー方針を敵対的検証（Adversarial Review）へ変更 | 高 | 完了 | claude | REVIEW.mdを新設し、姿勢・18観点・7手順・重要度分類・検証パス（CONFIRMED/PLAUSIBLE）を集約。reviewer.mdを更新（D-010参照） |
-| T-011 | 新規プロジェクト初期化手順の整備とSessionStart Hookの完了タスク除外 | 高 | 完了 | claude | README.mdに初期化手順を新設、AGENTS.mdから参照を追加。SessionStart Hookのcommandを完了タスク除外に変更し、docs/agents.mdの説明を更新（D-011参照） |
-| T-012 | Capability Layer（Agent-Reach・Code Review Graphの検出規約）の統合 | 高 | 完了 | claude | SessionStart HookにCapability検出を追加し、planner/developer/reviewer/researcher.md・REVIEW.md・CLAUDE.md・docs/agents.md・docs/research-workflow.mdへ参照を追加。Code Review GraphはCLI直接呼び出しのみ統合（D-012参照） |
-| T-013 | サブエージェント進捗の可視化（subagentStatusLine） | 中 | 完了 | claude | .claude/statusline-subagent.shを新設し、エージェントパネルに日本語で進捗表示。当初の実装は公式スキーマの誤認識・マルチバイト文字のtruncationバグがあり、実機検証で発見・修正（D-013参照） |
-| T-014 | ユーザー環境のClaude Codeプラグイン導入状況の確認 | 低 | 完了 | claude | 導入済み7プラグインの名前空間衝突・自動起動有無を公式ドキュメントで調査。「Codegraph」プラグインとdocs/code-review-graph.mdが参照するpip製CLIは別プロダクトである旨をdocs/code-review-graph.mdへ追記。Ponytailプラグインとの重複はユーザー環境側の設定判断のためdocsへの反映なし |
-| T-015 | AGENTS.md設計原則の圧縮（Ponytailプラグイン重複対応） | 低 | 完了 | claude | Ponytailプラグインとの重複を理由とした「参照のみ」化は、サブエージェントにSkillツールがないこと・このセッションにプラグイン自体が存在しないことの2点から不採用と判断。本文は維持し説明文のみ圧縮（D-014参照） |
-| T-016 | project001をClaude Code Starter Kit化（bootstrap.sh・Context7統合） | 高 | 完了 | claude | .claude/bootstrap.shを新設し案内のみのCapability検出に集約。Context7・GitHub CLIをTier1へ追加、Claude Codeプラグインはproject scopeで既定有効化しない方針を維持。/init-projectコマンドを新設（D-015参照） |
-| T-017 | Claude Code 2026運用ナレッジの適用（REVIEW.mdの過剰指摘抑制ルール等） | 中 | 完了 | claude | REVIEW.mdへ過剰指摘抑制ルールを追加、CLAUDE.mdへ削除テストと/compact表記を追記、docs/agents.mdのStop Hook不採用理由を補強（D-016参照） |
-| T-018 | PostToolUse Hookによる日本語文体チェックの導入 | 中 | 完了 | claude | .claude/hooks/ja-style-check.py・.claude/ja-style-rules.jsonを新設し.claude/settings.jsonへ登録。書き込み単位（Write/Editの新規テキストのみ）を検査し、docs/agents.mdのPostToolUse不採用理由を更新（D-017参照） |
-| T-019 | SubagentStop/SessionEnd Hookによる記録漏れの機械的検知 | 中 | 完了 | claude | .claude/hooks/subagent-doc-check.pyを新設しSubagentStop（developer限定）へ登録、SessionEndにgit statusベースのリマインドを追加。docs/agents.mdのHook構成を更新（D-018参照） |
-| T-020 | Claude Code公式仕様に基づく開発基盤監査、taste-skill 13件の撤去 | 高 | 完了 | claude | CLAUDE.md/AGENTS.md/.claude配下/docs/Capability Layer/レビューフローを2026年公式仕様と照らして監査。最優先事項としてtaste-skill 13件を削除しCLAUDE.mdを更新（D-019参照）。残り論点はバックログへ |
-| T-021 | `.claude/rules/`不採用の記録とREADME.mdのHook記述修正 | 低 | 完了 | claude | docs/decisions.mdにD-020（`.claude/rules/`不採用）を追加。README.mdの`.claude/settings.json`記述をHook 5種の実態に合わせて更新 |
-| T-022 | Capability Layer Tier1（Agent-Reach/Code Review Graph/Context7/GitHub CLI）をTier2へ格下げ | 中 | 完了 | claude | 動作未検証のまま常に`unavailable`だった4件をTier2へ格下げ。.claude/agents/*.md・REVIEW.md・docs/research-workflow.md・CLAUDE.md・docs/capability-layer.mdから「優先利用」の条件分岐を削除（D-021参照）。docs/agent-reach.md等は昇格時の参照として保持 |
-| T-023 | Auto Memoryとdocs/tasks.md等の役割分担を明記 | 中 | 完了 | claude | docs/agents.mdに「Auto Memoryとの役割分担」節を新設し、表形式で違いを整理（D-022参照）。T-020監査で洗い出した4項目すべて完了 |
-| T-024 | Claude Code向けMarkdownの構成・書式監査 | 中 | 完了 | claude | docs/agents.mdのHook構成節を見出し単位へ再構成、CLAUDE.md/REVIEW.mdの密な段落を箇条書き化、docs/agent-reach.md・context7.mdの重複記述を削除（D-023参照）。設計思想は変更なし |
+| T-001 | 要件整理・技術選定・実装計画の作成 | 高 | 完了 | planner | D-002参照。地図=MapLibre+OpenFreeMap、動画=Media3 Transformer、JSON=JsonReaderストリーミング4形式対応、永続化=素のSQLite、minSdk 29 |
+| T-002 | 環境確認＋プロジェクト雛形＋地図表示画面 | 高 | 完了 | developer | Gradleプロジェクト新設、MapLibre地図をComposeで表示するだけの最小画面。Android SDK有無をここで確認しdocs/progress.mdに記録 |
+| T-003 | タイムラインJSONパース（4形式対応） | 高 | 完了 | developer | 端末内Timeline(Android/iOS)・Takeout Semantic Location History・Takeout Records。共通中間モデルへ正規化。Reviewer指摘はT-003bで対応済み（D-004参照） |
+| T-003b | T-003レビュー指摘の修正（null耐性・複数データ源の統合・Gson化） | 高 | 完了 | developer | D-004参照。zip内Records.json/Semantic Location History混在時の優先順位、時刻ソート、JSON null耐性、Gson JsonReaderへの切替とパース統合テスト追加 |
+| T-004 | GPSノイズ除去・ルート簡略化（着手前にT-003b再検証のMedium/Low指摘2件も修正） | 高 | 完了 | developer | 正規化→速度スパイク除去→停留ジッタ抑制→時間ガード付きDouglas-Peucker→長期間欠損の分断。加えてTimelineJsonParser.ktの要素スキップ時ログ出力（D-004決定3未実装分）とトップレベル配列nullの耐性を追加する。レビュー指摘（High: Mercator投影距離の実距離判定への誤用）はT-004bで対応済み |
+| T-004b | T-004レビュー指摘の修正（TrackCleanerの実距離判定をHaversineへ） | 高 | 完了 | developer | D-005参照。Mercator投影距離は緯度に応じて実距離から乖離するため、速度スパイク除去・停留ジッタ抑制の判定をHaversineに置き換える |
+| T-005 | 永続化とインポート導線 | 高 | 完了 | developer | 素のSQLite（日単位BLOB）、SAF経由のファイル/zip取り込み。Reviewer指摘はT-005bで対応済み（D-006参照） |
+| T-005b | T-005レビュー指摘の修正（days上書き警告・SQLite変数上限・CancellationException） | 高 | 完了 | developer | D-006参照 |
+| T-006 | 地図上のルート表示＋期間指定（日/週/月/年） | 高 | 完了 | developer | RouteFrameRenderer（画面・動画共通描画関数）の新設。Reviewer指摘はT-006bで対応済み（D-007参照） |
+| T-006b | T-006レビュー指摘の修正（座標変換スケール・UIスレッドDP・Paint/Path再利用） | 高 | 完了 | developer | D-007参照 |
+| T-007 | アニメーション再生と速度制御 | 高 | 完了 | developer | データ時刻↔再生時刻の単調写像、自動速度（非線形圧縮）・手動倍率。Reviewer指摘はT-007bで対応済み（D-008参照） |
+| T-007b | T-007レビュー指摘の修正（再生中シークの競合、trimByProgress二重計算） | 高 | 完了 | developer | D-008参照 |
+| T-008 | アニメーションの動画書き出し | 高 | 完了 | developer | Media3 Transformer + BitmapOverlay。地図帰属表示の焼き込み必須（R8）。スパイク検証結果はD-009参照。Reviewer指摘はT-008bで対応済み（D-010参照） |
+| T-008b | T-008レビュー指摘の修正（MediaStoreロールバック・snapshotタイムアウト・単一点ルートのエラー文言） | 高 | 完了 | developer | D-010参照 |
+| T-009 | 仕上げ（エラー処理・a11y・性能確認・README） | 中 | 完了 | developer | 大量点データでの性能確認、リリース手順の記載。`TimelineViewModel.loadRoute`のクラッシュ耐性、Sliderのcontent description、未使用の位置情報権限除外（D-011）を追加修正 |
 
 ## バックログ（未着手・優先度未確定）
 
-- （ここに新しいタスク候補を追記する）
-- progress.mdが将来肥大化した場合、docs/progress-archive.md等への分割を検討する（D-006時点では未実施・優先度未確定）
+- 実データ（実際のTimelineエクスポートファイル）でのパーサ検証。ユーザーから個人情報を伏せたサンプル提供を受けられる場合に着手（D-002参照）
+- rawSignalsへの対応（D-002で v1スコープ外と決定。Records.json本体はD-004によりv1スコープに含めることへ変更済み）
+- TrackCleaner.removeSpeedSpikesが点列の先頭・末尾を判定対象外とする構造的な限界への対応（T-004レビューLow、実運用での発生可能性が低いため見送り）
+- TimelineJsonParserでJSON文書全体が`null`一つだけの場合のクラッシュ対応（T-004レビューNit、実運用での発生可能性が極めて低いため見送り）
+- 日付をまたぐ区間の移動距離がdays.distance_metersに計上されない件（T-005レビューNit、統計表示のみの誤差で点データ自体に影響しないため見送り。D-006参照）
+- 点・セグメント0件のインポートが無警告で成功表示される件（T-005レビューNit、見送り。D-006参照）
+- 週ラベルの年またぎ（12月最終週）を検証する単体テストの追加（T-006レビューLow、実装自体は妥当と判断、見送り。D-007参照）
+- fitBoundsが実質同一地点の複数点で極端ズームになりうる可能性（T-006レビューLow、クラッシュ耐性は確認済み、見送り。D-007参照）
+- 同一データ時刻・異なる位置の複数点があるとbinarySearchのタイブレークが不定でマーカーが固まりうる件（T-007レビューLow、実データでの発生頻度不明のため見送り。D-008参照）
+- PlaybackTimeline.buildAutoのalpha/beta負値検証の追加（T-007レビューNit、現状到達不能なコードパスのため見送り。D-008参照）
+- 再生中にシークバーを末尾(progress=1.0)までドラッグして離すと先頭から再スタートしてしまう件（T-007bレビューLow、特定操作のみに限定されクラッシュ・データ破損なし。見送り）
+- MediaStoreロールバック時のdelete呼び出し自体が失敗した場合の例外伝播（T-008bレビューLow、二重の狭い条件が重なる必要があり発生頻度が低いため見送り。D-010参照）
+- snapshotタイムアウト後に遅延コールバックが来た場合のBitmap未回収（T-008bレビューNit、実害なしのため見送り）
 
 ## メモ
 
@@ -51,5 +53,5 @@
 - タスクの状態が変わったら都度このファイルを更新する（作業完了後にまとめて更新しない）。
 - 詳細な作業内容や経緯は [progress.md](./progress.md) を参照。
 - 設計上の判断が必要になった場合は [decisions.md](./decisions.md) に記録する。
-- **状態列の値は必ず「状態の定義」にある6値を完全一致（前後の空白のみ許容）で使うこと**。SessionStart Hookの完了タスクフィルタ（`.claude/settings.json`）が状態列の完全一致で判定しているため、`完了(要再確認)`のような接尾辞付きの値は「未完了」として扱われる（安全側だが、フィルタが効かなくなる）。既知の制約としてT-011のレビューループで確認済み（docs/progress.md参照）。
+- **状態列の値は必ず「状態の定義」にある6値を完全一致（前後の空白のみ許容）で使うこと**。SessionStart Hookの完了タスクフィルタ（`.claude/settings.json`）が状態列の完全一致で判定しているため、`完了(要再確認)`のような接尾辞付きの値は「未完了」として扱われる（安全側だが、フィルタが効かなくなる）。
 - **タスク名・備考欄に未エスケープの`|`を含めないこと**。SessionStart Hookは`docs/tasks.md`を`awk -F'|'`で列分割しており、セル内に`|`があると以降の列がずれる。Markdownテーブルとしても不正な記法になるため、通常の運用では発生しない想定。

@@ -1,0 +1,466 @@
+package com.nagamaki0311.timeliner.data.parser
+
+import com.nagamaki0311.timeliner.model.TimelineSegmentType
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+/**
+ * [TimelineJsonParser]のテスト。
+ *
+ * `com.google.gson.stream.JsonReader`（`android.util.JsonReader`をフォークしたクラスでAPIが完全一致し、
+ * Android API非依存）へ切り替えたことで（docs/decisions.md D-003・D-004参照）、
+ * プレーンなJVM単体テストから本番と同一の`parseJson`/`parseZip`コードパスを実行できる。
+ */
+class TimelineJsonParserTest {
+
+    // ---- isTargetZipEntry（zipエントリのパス判定） ----
+
+    @Test
+    fun isTargetZipEntry_semanticLocationHistoryJson_isTarget() {
+        assertTrue(
+            TimelineJsonParser.isTargetZipEntry(
+                "Takeout/Location History (Timeline)/Semantic Location History/2026/2026_AUGUST.json"
+            )
+        )
+    }
+
+    @Test
+    fun isTargetZipEntry_recordsJson_isTarget() {
+        assertTrue(
+            TimelineJsonParser.isTargetZipEntry(
+                "Takeout/Location History (Timeline)/Records.json"
+            )
+        )
+    }
+
+    @Test
+    fun isTargetZipEntry_recordsJsonCaseInsensitive_isTarget() {
+        assertTrue(TimelineJsonParser.isTargetZipEntry("Takeout/records.JSON"))
+    }
+
+    @Test
+    fun isTargetZipEntry_windowsStyleBackslashPath_isTarget() {
+        assertTrue(
+            TimelineJsonParser.isTargetZipEntry(
+                "Takeout\\Location History (Timeline)\\Semantic Location History\\2026\\2026_AUGUST.json"
+            )
+        )
+    }
+
+    @Test
+    fun isTargetZipEntry_unrelatedJson_isNotTarget() {
+        assertFalse(TimelineJsonParser.isTargetZipEntry("Takeout/Location History (Timeline)/Settings.json"))
+    }
+
+    @Test
+    fun isTargetZipEntry_nonJsonFile_isNotTarget() {
+        assertFalse(
+            TimelineJsonParser.isTargetZipEntry(
+                "Takeout/Location History (Timeline)/Semantic Location History/2026/2026_AUGUST.csv"
+            )
+        )
+    }
+
+    @Test
+    fun isTargetZipEntry_readmeAtRoot_isNotTarget() {
+        assertFalse(TimelineJsonParser.isTargetZipEntry("Takeout/README.json"))
+    }
+
+    // ---- 形式A: 端末内Timeline(Android) ----
+
+    @Test
+    fun parseJson_deviceTimelineAndroid_parsesVisitActivityAndPathSegments() {
+        val json = """
+            {
+              "semanticSegments": [
+                {
+                  "startTime": "1700000000000",
+                  "endTime": "1700000001000",
+                  "visit": {
+                    "topCandidate": {
+                      "placeId": "ChIJ_VISIT",
+                      "placeLocation": {"latLng": "35.6812°, 139.7671°"}
+                    }
+                  }
+                },
+                {
+                  "startTime": "1700000002000",
+                  "endTime": "1700000003000",
+                  "activity": {
+                    "distanceMeters": 500.5,
+                    "start": {"latLng": "35.1°, 139.1°"},
+                    "end": {"latLng": "35.2°, 139.2°"},
+                    "topCandidate": {"type": "WALKING"}
+                  }
+                },
+                {
+                  "startTime": "1700000004000",
+                  "endTime": "1700000005000",
+                  "timelinePath": [
+                    {"point": "35.3°, 139.3°", "time": "1700000004200"},
+                    {"point": "35.4°, 139.4°", "time": "1700000004800"}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(5, track.pointCount)
+        assertEquals(3, track.segments.size)
+
+        val visitPoint = track.point(0)
+        assertEquals(35.6812, visitPoint.latitude, 1e-9)
+        assertEquals(139.7671, visitPoint.longitude, 1e-9)
+        assertEquals(1700000000000L, visitPoint.timestampMillis)
+
+        val activityStart = track.point(1)
+        assertEquals(35.1, activityStart.latitude, 1e-9)
+        val activityEnd = track.point(2)
+        assertEquals(35.2, activityEnd.latitude, 1e-9)
+
+        val pathPoint1 = track.point(3)
+        assertEquals(35.3, pathPoint1.latitude, 1e-9)
+        val pathPoint2 = track.point(4)
+        assertEquals(35.4, pathPoint2.latitude, 1e-9)
+
+        val visitSegment = track.segments[0]
+        assertEquals(TimelineSegmentType.VISIT, visitSegment.type)
+        assertEquals("ChIJ_VISIT", visitSegment.placeId)
+
+        val activitySegment = track.segments[1]
+        assertEquals(TimelineSegmentType.ACTIVITY, activitySegment.type)
+        assertEquals("WALKING", activitySegment.activityType)
+        assertEquals(500.5, activitySegment.distanceMeters!!, 1e-9)
+
+        val pathSegment = track.segments[2]
+        assertEquals(TimelineSegmentType.PATH_ONLY, pathSegment.type)
+    }
+
+    // ---- 形式B: 端末内Timeline(iOS) ----
+
+    @Test
+    fun parseJson_deviceTimelineIos_parsesVisitSegment() {
+        val json = """
+            [
+              {
+                "startTime": "1700000000000",
+                "endTime": "1700000001000",
+                "visit": {
+                  "topCandidate": {
+                    "placeID": "ID_IOS",
+                    "placeLocation": "geo:36.0,140.0"
+                  }
+                }
+              }
+            ]
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        val point = track.point(0)
+        assertEquals(36.0, point.latitude, 1e-9)
+        assertEquals(140.0, point.longitude, 1e-9)
+        assertEquals(1700000000000L, point.timestampMillis)
+
+        assertEquals(1, track.segments.size)
+        assertEquals("ID_IOS", track.segments[0].placeId)
+    }
+
+    // ---- 形式C: Takeout Semantic Location History(旧) ----
+
+    @Test
+    fun parseJson_takeoutSemanticLocationHistory_parsesPlaceVisitAndActivitySegment() {
+        val json = """
+            {
+              "timelineObjects": [
+                {
+                  "placeVisit": {
+                    "location": {
+                      "latitudeE7": 356812000,
+                      "longitudeE7": 1397671000,
+                      "placeId": "PID_SEMANTIC"
+                    },
+                    "duration": {
+                      "startTimestamp": "1700000000000",
+                      "endTimestamp": "1700000001000"
+                    }
+                  }
+                },
+                {
+                  "activitySegment": {
+                    "duration": {
+                      "startTimestamp": "1700000002000",
+                      "endTimestamp": "1700000003000"
+                    },
+                    "activityType": "WALKING",
+                    "distance": 123.4,
+                    "waypointPath": {
+                      "waypoints": [
+                        {"latE7": 356800000, "lngE7": 1397600000},
+                        {"latE7": 356900000, "lngE7": 1397900000}
+                      ]
+                    }
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(3, track.pointCount)
+        assertEquals(2, track.segments.size)
+
+        val visitPoint = track.point(0)
+        assertEquals(35.6812, visitPoint.latitude, 1e-9)
+        assertEquals(1700000000000L, visitPoint.timestampMillis)
+
+        val waypoint0 = track.point(1)
+        assertEquals(35.68, waypoint0.latitude, 1e-9)
+        assertEquals(1700000002000L, waypoint0.timestampMillis)
+
+        val waypoint1 = track.point(2)
+        assertEquals(35.69, waypoint1.latitude, 1e-9)
+        assertEquals(1700000003000L, waypoint1.timestampMillis)
+
+        assertEquals(TimelineSegmentType.VISIT, track.segments[0].type)
+        assertEquals("PID_SEMANTIC", track.segments[0].placeId)
+        assertEquals(TimelineSegmentType.ACTIVITY, track.segments[1].type)
+        assertEquals(123.4, track.segments[1].distanceMeters!!, 1e-9)
+    }
+
+    // ---- 形式D: Takeout Records(生GPS) ----
+
+    @Test
+    fun parseJson_takeoutRecords_parsesLocationPoints() {
+        val json = """
+            {
+              "locations": [
+                {"latitudeE7": 356812000, "longitudeE7": 1397671000, "timestamp": "1700000000000"},
+                {"latitudeE7": 356813000, "longitudeE7": 1397672000, "timestamp": "1700000001000"}
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(2, track.pointCount)
+        assertEquals(0, track.segments.size)
+        assertEquals(35.6812, track.point(0).latitude, 1e-9)
+        assertEquals(35.6813, track.point(1).latitude, 1e-9)
+    }
+
+    // ---- null耐性 ----
+
+    @Test
+    fun parseJson_placeVisitWithNullPlaceId_parsesSuccessfullyWithNullPlaceId() {
+        val json = """
+            {
+              "timelineObjects": [
+                {
+                  "placeVisit": {
+                    "location": {
+                      "latitudeE7": 356812000,
+                      "longitudeE7": 1397671000,
+                      "placeId": null
+                    },
+                    "duration": {
+                      "startTimestamp": "1700000000000",
+                      "endTimestamp": "1700000001000"
+                    }
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1, track.segments.size)
+        assertNull(track.segments[0].placeId)
+    }
+
+    @Test
+    fun parseJson_activitySegmentWithNullActivityType_parsesSuccessfullyWithNullActivityType() {
+        val json = """
+            {
+              "timelineObjects": [
+                {
+                  "activitySegment": {
+                    "duration": {
+                      "startTimestamp": "1700000000000",
+                      "endTimestamp": "1700000001000"
+                    },
+                    "activityType": null,
+                    "distance": 42.0
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.segments.size)
+        assertNull(track.segments[0].activityType)
+        assertEquals(42.0, track.segments[0].distanceMeters!!, 1e-9)
+    }
+
+    @Test
+    fun parseJson_recordWithNullLatitude_skipsThatRecordButParsesOthers() {
+        val json = """
+            {
+              "locations": [
+                {"latitudeE7": null, "longitudeE7": 1397671000, "timestamp": "1700000000000"},
+                {"latitudeE7": 356813000, "longitudeE7": 1397672000, "timestamp": "1700000001000"}
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(35.6813, track.point(0).latitude, 1e-9)
+        assertEquals(1700000001000L, track.point(0).timestampMillis)
+    }
+
+    @Test
+    fun parseJson_malformedElementInArray_skipsElementButParsesOtherElements() {
+        val json = """
+            {
+              "timelineObjects": [
+                {
+                  "placeVisit": {
+                    "location": {"latitudeE7": 356812000, "longitudeE7": 1397671000, "placeId": "PID_BAD"},
+                    "duration": "not-an-object"
+                  }
+                },
+                {
+                  "placeVisit": {
+                    "location": {"latitudeE7": 356813000, "longitudeE7": 1397672000, "placeId": "PID_GOOD"},
+                    "duration": {"startTimestamp": "1700000000000", "endTimestamp": "1700000001000"}
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1, track.segments.size)
+        assertEquals("PID_GOOD", track.segments[0].placeId)
+    }
+
+    @Test
+    fun parseJson_locationsFieldIsExplicitNull_parsesSuccessfullyWithNoPoints() {
+        val json = """{"locations": null}"""
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(0, track.pointCount)
+        assertEquals(0, track.segments.size)
+    }
+
+    // ---- zip: 複数データ源の優先順位付け・時刻ソート ----
+
+    @Test
+    fun parseZip_recordsAndSemanticLocationHistoryPresent_excludesRecordsJson() {
+        val recordsJson = """
+            {"locations": [{"latitudeE7": 10000000, "longitudeE7": 10000000, "timestamp": "1600000000000"}]}
+        """.trimIndent()
+        val semanticJson = """
+            {
+              "timelineObjects": [
+                {
+                  "placeVisit": {
+                    "location": {"latitudeE7": 356812000, "longitudeE7": 1397671000, "placeId": "PID"},
+                    "duration": {"startTimestamp": "1700000000000", "endTimestamp": "1700000001000"}
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+        val zipBytes = buildZip(
+            listOf(
+                "Takeout/Location History (Timeline)/Records.json" to recordsJson,
+                "Takeout/Location History (Timeline)/Semantic Location History/2023/2023_JANUARY.json" to semanticJson
+            )
+        )
+
+        val track = TimelineJsonParser.parseZip { ByteArrayInputStream(zipBytes) }
+
+        assertEquals(1, track.pointCount)
+        assertEquals(35.6812, track.point(0).latitude, 1e-9)
+    }
+
+    @Test
+    fun parseZip_recordsOnly_parsesRecordsJson() {
+        val recordsJson = """
+            {"locations": [{"latitudeE7": 10000000, "longitudeE7": 10000000, "timestamp": "1600000000000"}]}
+        """.trimIndent()
+        val zipBytes = buildZip(
+            listOf("Takeout/Location History (Timeline)/Records.json" to recordsJson)
+        )
+
+        val track = TimelineJsonParser.parseZip { ByteArrayInputStream(zipBytes) }
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1.0, track.point(0).latitude, 1e-9)
+    }
+
+    @Test
+    fun parseZip_multipleEntriesOutOfOrder_pointsAreSortedByTimestampAscending() {
+        fun placeVisitJson(startEpoch: Long, endEpoch: Long, placeId: String): String = """
+            {
+              "timelineObjects": [
+                {
+                  "placeVisit": {
+                    "location": {"latitudeE7": 356812000, "longitudeE7": 1397671000, "placeId": "$placeId"},
+                    "duration": {"startTimestamp": "$startEpoch", "endTimestamp": "$endEpoch"}
+                  }
+                }
+              ]
+            }
+        """.trimIndent()
+
+        // zip格納順はMARCH→JANUARY（時系列と逆）。ZipInputStreamはこの格納順のまま返す。
+        val zipBytes = buildZip(
+            listOf(
+                "Takeout/Semantic Location History/2023/2023_MARCH.json" to
+                    placeVisitJson(3_000_000_000L, 3_000_001_000L, "MARCH"),
+                "Takeout/Semantic Location History/2023/2023_JANUARY.json" to
+                    placeVisitJson(1_000_000_000L, 1_000_001_000L, "JANUARY")
+            )
+        )
+
+        val track = TimelineJsonParser.parseZip { ByteArrayInputStream(zipBytes) }
+
+        assertEquals(2, track.pointCount)
+        assertEquals(1_000_000_000L, track.timestampsMillis[0])
+        assertEquals(3_000_000_000L, track.timestampsMillis[1])
+    }
+
+    private fun buildZip(entries: List<Pair<String, String>>): ByteArray {
+        val output = ByteArrayOutputStream()
+        ZipOutputStream(output).use { zip ->
+            entries.forEach { (name, content) ->
+                zip.putNextEntry(ZipEntry(name))
+                zip.write(content.toByteArray(Charsets.UTF_8))
+                zip.closeEntry()
+            }
+        }
+        return output.toByteArray()
+    }
+}
