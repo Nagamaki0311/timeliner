@@ -3,6 +3,7 @@ package com.nagamaki0311.timeliner.render
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import com.nagamaki0311.timeliner.ui.MapConfig
 
 /**
@@ -15,7 +16,15 @@ import com.nagamaki0311.timeliner.ui.MapConfig
  */
 object RouteFrameRenderer {
 
-    /** 描画スタイル（色・線太さ等）。呼び出し側でテーマに応じて差し替え可能にする。 */
+    /**
+     * 描画スタイル（色・線太さ等）。呼び出し側でテーマに応じて差し替え可能にする。
+     *
+     * [Paint]/[Path]は呼び出しのたび（毎フレーム）に生成せず、この[Style]インスタンス自身に
+     * `by lazy`で保持して使い回す（T-006レビュー指摘・D-007決定3。T-008の動画書き出しで同じ
+     * レンダラーを数百〜数千フレーム分連続描画する際のアロケーション削減が目的）。
+     * 同一の[Style]インスタンスを呼び出し元が使い回すことで初めて効果があるため、
+     * デフォルト引数の解決先は[DEFAULT_STYLE]（シングルトン）とする。
+     */
     data class Style(
         val routeColor: Int = Color.parseColor("#1976D2"),
         val routeStrokeWidthPx: Float = 6f,
@@ -28,7 +37,50 @@ object RouteFrameRenderer {
         val attributionTextSizePx: Float = 22f,
         val attributionTextColor: Int = Color.DKGRAY,
         val paddingPx: Float = 16f
-    )
+    ) {
+        val routePaint: Paint by lazy {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = routeColor
+                strokeWidth = routeStrokeWidthPx
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+        }
+        val markerFillPaint: Paint by lazy {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = markerColor
+                style = Paint.Style.FILL
+            }
+        }
+        val markerStrokePaint: Paint by lazy {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = markerStrokeColor
+                style = Paint.Style.STROKE
+                strokeWidth = markerStrokeWidthPx
+            }
+        }
+        val dateTimeTextPaint: Paint by lazy {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = dateTimeTextColor
+                textSize = dateTimeTextSizePx
+                textAlign = Paint.Align.LEFT
+            }
+        }
+        val attributionPaint: Paint by lazy {
+            Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = attributionTextColor
+                textSize = attributionTextSizePx
+                textAlign = Paint.Align.RIGHT
+            }
+        }
+
+        /** ルート線描画用に使い回す[Path]。[drawRoute]内で毎回[Path.reset]してから再構築する。 */
+        val routePath: Path by lazy { Path() }
+    }
+
+    /** [draw]のデフォルト引数として使うシングルトンの[Style]。Paint/Pathキャッシュを有効にするため、呼び出しごとに新規生成しない。 */
+    private val DEFAULT_STYLE = Style()
 
     /** 画面上の1点（ピクセル）。[RouteOverlayView]・T-008双方から使う最小限の値保持のみのデータクラス。 */
     data class ScreenPoint(val x: Float, val y: Float)
@@ -47,7 +99,7 @@ object RouteFrameRenderer {
         progress: Float,
         currentPositionScreen: ScreenPoint?,
         dateTimeText: String?,
-        style: Style = Style()
+        style: Style = DEFAULT_STYLE
     ) {
         drawRoute(canvas, trimByProgress(screenCoordinates, progress.coerceIn(0f, 1f)), style)
         if (currentPositionScreen != null) {
@@ -86,60 +138,40 @@ object RouteFrameRenderer {
         return result
     }
 
-    // ヘルパー内では`Paint.style`（塗り/線種）との名前衝突を避けるため、引数名を`frameStyle`とする。
+    // 引数名を`frameStyle`とするのは、パラメータ型`Style`と紛らわしい小文字名を避けるため。
     private fun drawRoute(canvas: Canvas, screenCoordinates: FloatArray, frameStyle: Style) {
         val pointCount = screenCoordinates.size / 2
         if (pointCount < 2) return
 
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = frameStyle.routeColor
-            strokeWidth = frameStyle.routeStrokeWidthPx
-            style = Paint.Style.STROKE
-            strokeCap = Paint.Cap.ROUND
-            strokeJoin = Paint.Join.ROUND
-        }
-        val path = android.graphics.Path()
+        val path = frameStyle.routePath
+        path.reset()
         path.moveTo(screenCoordinates[0], screenCoordinates[1])
         for (i in 1 until pointCount) {
             path.lineTo(screenCoordinates[i * 2], screenCoordinates[i * 2 + 1])
         }
-        canvas.drawPath(path, paint)
+        canvas.drawPath(path, frameStyle.routePaint)
     }
 
     private fun drawMarker(canvas: Canvas, position: ScreenPoint, frameStyle: Style) {
-        val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = frameStyle.markerColor
-            style = Paint.Style.FILL
-        }
-        val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = frameStyle.markerStrokeColor
-            style = Paint.Style.STROKE
-            strokeWidth = frameStyle.markerStrokeWidthPx
-        }
-        canvas.drawCircle(position.x, position.y, frameStyle.markerRadiusPx, fillPaint)
-        canvas.drawCircle(position.x, position.y, frameStyle.markerRadiusPx, strokePaint)
+        canvas.drawCircle(position.x, position.y, frameStyle.markerRadiusPx, frameStyle.markerFillPaint)
+        canvas.drawCircle(position.x, position.y, frameStyle.markerRadiusPx, frameStyle.markerStrokePaint)
     }
 
     private fun drawDateTimeText(canvas: Canvas, text: String, frameStyle: Style) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = frameStyle.dateTimeTextColor
-            textSize = frameStyle.dateTimeTextSizePx
-            textAlign = Paint.Align.LEFT
-        }
-        canvas.drawText(text, frameStyle.paddingPx, frameStyle.paddingPx + frameStyle.dateTimeTextSizePx, paint)
+        canvas.drawText(
+            text,
+            frameStyle.paddingPx,
+            frameStyle.paddingPx + frameStyle.dateTimeTextSizePx,
+            frameStyle.dateTimeTextPaint
+        )
     }
 
     private fun drawAttribution(canvas: Canvas, frameStyle: Style) {
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = frameStyle.attributionTextColor
-            textSize = frameStyle.attributionTextSizePx
-            textAlign = Paint.Align.RIGHT
-        }
         canvas.drawText(
             MapConfig.ATTRIBUTION_TEXT,
             canvas.width - frameStyle.paddingPx,
             canvas.height - frameStyle.paddingPx,
-            paint
+            frameStyle.attributionPaint
         )
     }
 }

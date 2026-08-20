@@ -84,4 +84,23 @@ class MercatorTest {
         val projected = Mercator.distanceMeters(35.681236, 139.767125, 35.689607, 139.700571)
         assertTrue(haversine < projected)
     }
+
+    @Test
+    fun distanceMeters_matchesHaversineOnlyAtEquator_confirmingLatitudeZeroIsTheCorrectMetersPerPixelReference() {
+        // longitudeToX/latitudeToYが返す投影座標のスケールは緯度によらず一定（Webメルカトルの定義上、
+        // 緯度0での実距離スケールと一致する）。RouteOverlayViewがMapLibreMap.projection
+        // .getMetersPerPixelAtLatitude(0.0)を使うのは、この投影座標のスケールと一致させるため
+        // （D-007決定1）。ここでは緯度0での投影距離/実距離(Haversine)の比が1に近いことを確認する
+        // （厳密に1.0にならないのは、Web メルカトル(EPSG:3857)が赤道半径6378137mを使うのに対し、
+        // Haversineは地球平均半径6371000mを使うため、0.1%強の定数由来の差が残るのは想定通り）。
+        val equatorHaversine = Mercator.haversineDistanceMeters(0.0, 139.0, 0.0, 140.0)
+        val equatorProjected = Mercator.distanceMeters(0.0, 139.0, 0.0, 140.0)
+        assertEquals(1.0, equatorProjected / equatorHaversine, 0.002)
+
+        // 東京(緯度約35.68度)では投影距離と実距離が明確に乖離する（このケースでは緯度0の値の
+        // 約1.23倍、D-007の背景に記載の乖離率と一致）。緯度0固定を使う根拠の対比として確認する。
+        val tokyoHaversine = Mercator.haversineDistanceMeters(35.681236, 139.0, 35.681236, 140.0)
+        val tokyoProjected = Mercator.distanceMeters(35.681236, 139.0, 35.681236, 140.0)
+        assertEquals(1.23, tokyoProjected / tokyoHaversine, 0.01)
+    }
 }

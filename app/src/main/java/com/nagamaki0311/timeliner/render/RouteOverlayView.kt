@@ -100,7 +100,10 @@ class RouteOverlayView @JvmOverloads constructor(
             invalidate()
             return
         }
-        val metersPerPixel = currentMap.projection.getMetersPerPixelAtLatitude(target.latitude)
+        // Mercator.longitudeToX/latitudeToYが返すワールド座標は緯度非依存の一定スケールを持つ投影座標
+        // （MapLibre自身の描画空間）であるため、緯度で変動する実世界距離基準のmetersPerPixelと組み合わせると
+        // 赤道以外でズレる。緯度0固定で取得し、投影メートル/ピクセルと一致させる（D-007決定1）。
+        val metersPerPixel = currentMap.projection.getMetersPerPixelAtLatitude(0.0)
         val zoomBucket = Math.round(cameraPosition.zoom).toInt()
         if (zoomBucket != cachedZoomBucket) {
             val epsilonMeters = (metersPerPixel * SIMPLIFY_EPSILON_SCREEN_PIXELS).coerceAtLeast(MIN_EPSILON_METERS)
@@ -108,7 +111,8 @@ class RouteOverlayView @JvmOverloads constructor(
                 currentRoute.latitudes,
                 currentRoute.longitudes,
                 currentRoute.timestampsMillis,
-                epsilonMeters
+                epsilonMeters,
+                maxPointCount = SIMPLIFY_MAX_POINT_COUNT
             )
             cachedSimplifiedWorldXs = DoubleArray(keptIndices.size) { Mercator.longitudeToX(currentRoute.longitudes[keptIndices[it]]) }
             cachedSimplifiedWorldYs = DoubleArray(keptIndices.size) { Mercator.latitudeToY(currentRoute.latitudes[keptIndices[it]]) }
@@ -135,5 +139,12 @@ class RouteOverlayView @JvmOverloads constructor(
 
         /** epsilonMetersが0にならないための下限（極端な拡大時の保険）。 */
         private const val MIN_EPSILON_METERS = 0.01
+
+        /**
+         * Douglas-Peucker簡略化後に残す点数の上限（画面幅ピクセル数のオーダー、D-007決定2）。
+         * UIスレッド（`OnCameraMoveListener`コールバック）上での同期実行を、未簡略化の期間全体点列
+         * （数万〜十万点規模）に対してではなく、この上限を超えない範囲に抑えるための安全弁。
+         */
+        private const val SIMPLIFY_MAX_POINT_COUNT = 3000
     }
 }

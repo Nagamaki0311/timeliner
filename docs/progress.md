@@ -17,6 +17,31 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-006b T-006レビュー指摘の修正（座標変換スケール・UIスレッドDP・Paint/Path再利用）
+
+### 実施内容
+D-007の決定に従い、以下を修正した（対象: `app/src/main/java/com/nagamaki0311/timeliner/render/`）。
+
+- **High: 座標変換のスケール誤り**
+  - `RouteOverlayView.recomputeAndInvalidate`の`metersPerPixel`取得を`currentMap.projection.getMetersPerPixelAtLatitude(target.latitude)`（緯度依存の実世界距離基準）から`getMetersPerPixelAtLatitude(0.0)`（緯度0固定）へ変更した。`Mercator.longitudeToX/latitudeToY`が返すワールド座標は緯度に依存しない一定スケールの投影座標であり、緯度0でのメートル/ピクセルがこの投影座標のスケールと一致するため（D-007決定1）。
+- **High: UIスレッドでのDouglas-Peucker無制限同期実行**
+  - `RouteOverlayView`の`Simplifier.simplify`呼び出しに`maxPointCount = SIMPLIFY_MAX_POINT_COUNT`（3000、companion定数として新設）を渡すようにした。DP自体の非同期化（`Dispatchers.Default`）はD-007決定2で必須とされていないため、今回は行っていない（`OnCameraMoveListener`のコールバック内で同期実行のままだが、入力点数の上限が保証されるため無制限実行によるANRリスクは解消される）。
+- **Medium: Paint/Pathの毎フレーム再生成**
+  - `RouteFrameRenderer.Style`データクラスに`routePaint`/`markerFillPaint`/`markerStrokePaint`/`dateTimeTextPaint`/`attributionPaint`（いずれも`Paint`）と`routePath`（`Path`）を`by lazy`で追加し、`drawRoute`/`drawMarker`/`drawDateTimeText`/`drawAttribution`はこれらを使い回すよう変更した（`Path`は`reset()`してから再構築）。`draw`関数のデフォルト引数`style: Style = Style()`は、呼び出しのたび新規インスタンスを生成すると`by lazy`のキャッシュ効果が無効化される（`RouteOverlayView.onDraw`は毎フレーム`style`を明示指定せず呼んでいるため）ため、`style: Style = DEFAULT_STYLE`（object内のシングルトンインスタンス）へ変更した。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（既存の全テストに加え、下記の新規テストを含め全件パス）。
+- `./gradlew assembleDebug`が成功。
+- 座標変換の修正（1番）について、`ScreenProjection`自体は変更していない（バグはワールド座標→画面座標のアフィン変換ロジックではなく、その入力である`metersPerPixel`をどの緯度で取得するかという`RouteOverlayView`側の呼び出し箇所にあったため）。代わりに、修正の理論的根拠を検証する単体テストを`MercatorTest.kt`に1件追加した（`distanceMeters_matchesHaversineOnlyAtEquator_confirmingLatitudeZeroIsTheCorrectMetersPerPixelReference`）: 緯度0では投影距離(`distanceMeters`)と実距離(`haversineDistanceMeters`)の比が1に近い（残差はEPSG:3857の赤道半径6378137mとHaversineの地球平均半径6371000mという定数の違いによるものであり、0.2%の許容誤差で確認した）一方、東京（緯度約35.68度）では比が約1.23倍に乖離することを確認し、`getMetersPerPixelAtLatitude(0.0)`を使う根拠を裏付けた。`MapLibreMap.projection`自体への依存があるため`RouteOverlayView.recomputeAndInvalidate`本体は引き続きJVM単体テストの対象外（D-003と同種の制約）。
+- `RouteFrameRenderer.kt`は引き続き`android.graphics.Canvas`/`Paint`/`Path`に依存するためJVM単体テスト対象外（Paint/Pathキャッシュの効果自体はコードレビューによる確認に留まる）。
+- 実機/エミュレータでの目視確認（座標ズレが解消されたか、ANRが解消されたか）は本セッションでは未実施（環境制約、T-002以降一貫した既知の制約）。
+
+### 次回開始位置
+- T-007（アニメーション再生と速度制御）に着手する。`RouteFrameRenderer.draw`の`progress`引数・`RouteOverlayView`は既に導線があるため、データ時刻↔再生時刻の写像と、`progress`を実際に変化させる再生ループの実装が中心になる想定。T-007以降で`RouteFrameRenderer.draw`を高頻度に呼ぶ場合、呼び出し元は同一の`Style`インスタンス（`DEFAULT_STYLE`、またはカスタムStyleを保持する場合はそのインスタンス自身）を使い回すこと（毎回`Style()`を新規生成するとPaint/Pathキャッシュが無効化される）。
+
+### コミット
+- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット済み予定（Manager確認後にコミットして問題ない）。
+
 ## 2026-08-20 T-006 地図上のルート表示＋期間指定（日/週/月/年）
 
 ### 実施内容

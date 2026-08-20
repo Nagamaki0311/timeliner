@@ -23,8 +23,8 @@
 | T-004b | T-004レビュー指摘の修正（TrackCleanerの実距離判定をHaversineへ） | 高 | 完了 | developer | D-005参照。Mercator投影距離は緯度に応じて実距離から乖離するため、速度スパイク除去・停留ジッタ抑制の判定をHaversineに置き換える |
 | T-005 | 永続化とインポート導線 | 高 | 完了 | developer | 素のSQLite（日単位BLOB）、SAF経由のファイル/zip取り込み。Reviewer指摘はT-005bで対応済み（D-006参照） |
 | T-005b | T-005レビュー指摘の修正（days上書き警告・SQLite変数上限・CancellationException） | 高 | 完了 | developer | D-006参照 |
-| T-006 | 地図上のルート表示＋期間指定（日/週/月/年） | 高 | レビュー中 | developer | RouteFrameRenderer（画面・動画共通描画関数）の新設。Reviewer指摘によりT-006bで修正ループ中（D-007参照） |
-| T-006b | T-006レビュー指摘の修正（座標変換スケール・UIスレッドDP・Paint/Path再利用） | 高 | 未着手 | developer | D-007参照 |
+| T-006 | 地図上のルート表示＋期間指定（日/週/月/年） | 高 | 完了 | developer | RouteFrameRenderer（画面・動画共通描画関数）の新設。Reviewer指摘はT-006bで対応済み（D-007参照） |
+| T-006b | T-006レビュー指摘の修正（座標変換スケール・UIスレッドDP・Paint/Path再利用） | 高 | 完了 | developer | D-007参照 |
 | T-007 | アニメーション再生と速度制御 | 高 | 未着手 | developer | データ時刻↔再生時刻の単調写像、自動速度（非線形圧縮）・手動倍率 |
 | T-008 | アニメーションの動画書き出し | 高 | 未着手 | developer | Media3 Transformer + BitmapOverlay。地図帰属表示の焼き込み必須（R8） |
 | T-009 | 仕上げ（エラー処理・a11y・性能確認・README） | 中 | 未着手 | developer | 大量点データでの性能確認、リリース手順の記載 |
