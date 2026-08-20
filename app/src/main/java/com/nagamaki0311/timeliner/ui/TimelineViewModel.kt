@@ -19,6 +19,7 @@ import com.nagamaki0311.timeliner.store.TimelineRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -108,10 +109,21 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
             _exportState.value = ExportUiState.Error("書き出す期間にデータがありません")
             return
         }
+        if (route.latitudes.size < 2) {
+            // PlaybackTimelineの総再生時間は点1つのみでは0になり、VideoExporter.export内部の
+            // requireが投げる例外メッセージがそのまま露出してしまうため、ここで検出しユーザー向け文言にする
+            // （docs/decisions.md D-010決定3）。
+            _exportState.value = ExportUiState.Error("この期間はデータが少なく動画を作成できません")
+            return
+        }
         val appContext = context.applicationContext
         _exportState.value = ExportUiState.InProgress(0f)
         exportJob = viewModelScope.launch {
             val outputFile = File(appContext.cacheDir, "timeliner_export_${System.currentTimeMillis()}.mp4")
+            // insert直後（コピー完了前）に発行されるMediaStore URI。コピー完了後に本コルーチンが
+            // キャンセルされ戻り値が失われる場合でも、ここに残った値でロールバックできるようにする
+            // （docs/decisions.md D-010決定1）。
+            var mediaStoreUri: Uri? = null
             try {
                 val timeline = PlaybackTimeline.buildAuto(
                     route.timestampsMillis, route.latitudes, route.longitudes, targetDurationMillis
@@ -126,10 +138,17 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
                     onProgress = { fraction -> _exportState.value = ExportUiState.InProgress(fraction) }
                 )
                 val videoUri = withContext(Dispatchers.IO) {
-                    VideoOutput.saveToMediaStore(appContext, outputFile, outputFile.name)
+                    VideoOutput.saveToMediaStore(appContext, outputFile, outputFile.name) { uri ->
+                        mediaStoreUri = uri
+                    }
                 }
                 _exportState.value = ExportUiState.Success(videoUri)
             } catch (e: CancellationException) {
+                mediaStoreUri?.let { uri ->
+                    withContext(Dispatchers.IO + NonCancellable) {
+                        appContext.contentResolver.delete(uri, null, null)
+                    }
+                }
                 _exportState.value = ExportUiState.Idle
                 throw e
             } catch (e: Exception) {

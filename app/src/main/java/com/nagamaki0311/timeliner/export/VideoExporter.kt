@@ -22,8 +22,10 @@ import com.nagamaki0311.timeliner.render.ScreenProjection
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.maplibre.android.maps.MapLibreMap
 import java.io.File
 import java.io.FileOutputStream
@@ -112,10 +114,21 @@ class VideoExporter(context: Context) {
         }
     }
 
+    /**
+     * `MapLibreMap.snapshot()`のコールバックを待つ。`MapView`が`started`状態でない場合はコールバックが
+     * 一切呼ばれない（MapLibre側の仕様）ため、[SNAPSHOT_TIMEOUT_MILLIS]でタイムアウトする
+     * （docs/decisions.md D-010決定2）。タイムアウトは`TimeoutCancellationException`
+     * （`CancellationException`のサブクラス）で発生するが、そのまま伝播させると呼び出し元で
+     * 「ユーザーによるキャンセル」と区別が付かなくなるため、[ExportFailedException]へ変換する。
+     */
     private suspend fun awaitSnapshot(map: MapLibreMap): Bitmap {
         val deferred = CompletableDeferred<Bitmap>()
         map.snapshot { bitmap -> deferred.complete(bitmap) }
-        return deferred.await()
+        return try {
+            withTimeout(SNAPSHOT_TIMEOUT_MILLIS) { deferred.await() }
+        } catch (e: TimeoutCancellationException) {
+            throw ExportFailedException("地図のスナップショット取得がタイムアウトしました", e)
+        }
     }
 
     /** [buildExportGeometry]の戻り値。動画の下地画像（PNG一時ファイル）と、その画像に対応する画面座標・時刻配列。 */
@@ -245,6 +258,7 @@ class VideoExporter(context: Context) {
     companion object {
         private const val FRAME_RATE = 30
         private const val PROGRESS_POLL_INTERVAL_MILLIS = 200L
+        private const val SNAPSHOT_TIMEOUT_MILLIS = 10_000L
         private const val SIMPLIFY_EPSILON_SCREEN_PIXELS = 2.0
         private const val MIN_EPSILON_METERS = 0.01
         private const val SIMPLIFY_MAX_POINT_COUNT = 3000

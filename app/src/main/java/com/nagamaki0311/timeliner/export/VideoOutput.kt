@@ -20,8 +20,18 @@ object VideoOutput {
     /**
      * [sourceFile]の内容を`MediaStore.Video.Media`（`RELATIVE_PATH=Movies/timeliner`）へコピーし、
      * 登録先の`content://` URIを返す。コピー完了後、呼び出し元は[sourceFile]（一時ファイル）を削除してよい。
+     *
+     * `insert`成功直後（コピー開始前）に[onUriCreated]で発行済みURIを呼び出し元へ通知する
+     * （docs/decisions.md D-010決定1）。これはコピー完了後にコルーチンがキャンセルされ戻り値が
+     * 呼び出し元に届かない場合でも、呼び出し元が発行済みURIを把握してロールバックできるようにするため。
+     * コピー・更新中に失敗した場合は、この関数自身が`resolver.delete`でロールバックしてから例外を再送出する。
      */
-    fun saveToMediaStore(context: Context, sourceFile: File, displayName: String): Uri {
+    fun saveToMediaStore(
+        context: Context,
+        sourceFile: File,
+        displayName: String,
+        onUriCreated: (Uri) -> Unit = {}
+    ): Uri {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
@@ -33,15 +43,21 @@ object VideoOutput {
         val itemUri = requireNotNull(resolver.insert(collection, values)) {
             "MediaStoreへの書き込み用URIを取得できませんでした"
         }
-        val outputStream = requireNotNull(resolver.openOutputStream(itemUri)) {
-            "MediaStore出力ストリームを開けませんでした"
-        }
-        outputStream.use { out -> sourceFile.inputStream().use { input -> input.copyTo(out) } }
+        onUriCreated(itemUri)
+        try {
+            val outputStream = requireNotNull(resolver.openOutputStream(itemUri)) {
+                "MediaStore出力ストリームを開けませんでした"
+            }
+            outputStream.use { out -> sourceFile.inputStream().use { input -> input.copyTo(out) } }
 
-        values.clear()
-        values.put(MediaStore.Video.Media.IS_PENDING, 0)
-        resolver.update(itemUri, values, null, null)
-        return itemUri
+            values.clear()
+            values.put(MediaStore.Video.Media.IS_PENDING, 0)
+            resolver.update(itemUri, values, null, null)
+            return itemUri
+        } catch (e: Exception) {
+            resolver.delete(itemUri, null, null)
+            throw e
+        }
     }
 
     /** [videoUri]を他アプリへ共有するためのIntentを組み立てる。 */

@@ -17,6 +17,28 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-008b T-008レビュー指摘の修正（MediaStoreロールバック・snapshotタイムアウト・単一点ルートのエラー文言）
+
+### 実施内容
+D-010の決定に従い、以下3件を修正した。
+
+- **Medium: MediaStore書き込みのロールバック欠如**
+  - `app/src/main/java/com/nagamaki0311/timeliner/export/VideoOutput.kt`の`saveToMediaStore`に`onUriCreated: (Uri) -> Unit = {}`引数を追加し、`insert`成功直後（コピー開始前）に発行済みURIを呼び出し元へ通知するようにした。`openOutputStream`〜`copyTo`〜`IS_PENDING`更新の一連の処理を`try/catch(Exception)`で囲み、失敗時は`resolver.delete(itemUri, null, null)`でロールバックしてから例外を再送出する。
+  - `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineViewModel.kt`の`exportVideo`で、`saveToMediaStore`呼び出し時に`onUriCreated`ラムダで発行済みURIを`mediaStoreUri`（launch内のローカル変数）に記録し、`catch (e: CancellationException)`ブロックで非nullなら`withContext(Dispatchers.IO + NonCancellable) { appContext.contentResolver.delete(uri, null, null) }`で削除するようにした（`NonCancellable`はキャンセル済みコルーチン内でも後始末の`delete`呼び出し自体は完了させるため）。コピーが完了しMediaStore行が`IS_PENDING=0`になった後にキャンセルが伝播した場合（`withContext`から呼び出し元へ戻る際の中断点）も、この経路でロールバックされる。
+- **Medium: snapshotタイムアウト欠如**
+  - `app/src/main/java/com/nagamaki0311/timeliner/export/VideoExporter.kt`の`awaitSnapshot`を`withTimeout(SNAPSHOT_TIMEOUT_MILLIS)`（10秒、新設のcompanion定数）で包んだ。`withTimeout`が投げる`TimeoutCancellationException`は`kotlinx.coroutines.CancellationException`のサブクラスであり、そのまま伝播させると`TimelineViewModel`の`catch (e: CancellationException)`（ユーザーによるキャンセル扱い、`ExportUiState.Idle`へ遷移）に吸収されてしまいエラー表示されなくなるため、`awaitSnapshot`内で`catch (e: TimeoutCancellationException)`し`ExportFailedException`（通常の`Exception`）へ変換して再送出するようにした。これにより`TimelineViewModel`の`catch (e: Exception)`分岐で`ExportUiState.Error`として表示される。
+- **Medium: 単一点ルートでの内部例外メッセージ露出**
+  - `TimelineViewModel.exportVideo`の冒頭（`route`のnullチェック直後）で`route.latitudes.size < 2`を検出し、「この期間はデータが少なく動画を作成できません」を`ExportUiState.Error`へ設定して`return`するガードを追加した。`VideoExporter.export`内部の`require(durationMs > 0)`はそのまま残し（2点以上でも理論上durationMsが0になりえないことのアサーションとして機能させる、AGENTS.md原則6）、通常の呼び出し経路ではこのガードにより到達しない設計にした。
+
+### 結果
+- `./gradlew testDebugUnitTest`成功（既存129件、影響ファイルはいずれもAndroid API依存の関数内の変更のみで新規純Kotlinロジックは追加していないため新規テストなし）。
+- `./gradlew assembleDebug`成功。
+- 点数チェック（修正3）は`TimelineViewModel.exportVideo`内の1行の条件分岐であり、Android依存（`Context`/`MapLibreMap`）の関数内に埋め込まれているため独立した単体テストは追加しなかった（`route.latitudes.size < 2`というトリビアルな比較のためだけに専用の純Kotlin関数へ抽出することは、AGENTS.md判定ラダー1（YAGNI）・原則5（投機的な抽象化を追加しない）に照らし過剰と判断した）。ロールバック処理（`saveToMediaStore`のtry/catch、`TimelineViewModel`の`NonCancellable`削除）・snapshotタイムアウト（`withTimeout`）はいずれも`ContentResolver`/`MapLibreMap`/コルーチンの実時間待機に依存するため、D-003以来の制約と同様にJVM単体テストの対象外（コードレビューによる確認に留まる）。
+- 実機/エミュレータでの目視確認（ロールバックが実際にMediaStoreへ反映されるか、`MapView`が`started`でない場合のタイムアウトが実際に働くか）は本セッションでは未実施（環境制約、T-002以降一貫した既知の制約）。
+
+### 次回開始位置
+- T-009（仕上げ: エラー処理・a11y・性能確認・README）に着手する。T-008/T-008bの実機確認未実施（D-009参照）を踏まえ、実機/エミュレータが利用可能になった時点で動画書き出し・MediaStoreロールバック・snapshotタイムアウトの目視確認を行うことが望ましい。
+
 ## 2026-08-20 T-008 アニメーションの動画書き出し
 
 ### 実施内容
