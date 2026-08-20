@@ -8,6 +8,8 @@ import androidx.lifecycle.viewModelScope
 import com.nagamaki0311.timeliner.data.ImportSource
 import com.nagamaki0311.timeliner.model.Period
 import com.nagamaki0311.timeliner.model.PeriodType
+import com.nagamaki0311.timeliner.playback.PlaybackController
+import com.nagamaki0311.timeliner.playback.SpeedMode
 import com.nagamaki0311.timeliner.store.PointBlobCodec
 import com.nagamaki0311.timeliner.store.TimelineDb
 import com.nagamaki0311.timeliner.store.TimelineRepository
@@ -51,6 +53,13 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private val _routePoints = MutableStateFlow<PointBlobCodec.DecodedPoints?>(null)
     val routePoints: StateFlow<PointBlobCodec.DecodedPoints?> = _routePoints.asStateFlow()
 
+    /**
+     * アニメーション再生の状態管理（docs/tasks.md T-007）。[selectedPeriod]のルートデータが変わるたびに
+     * [PlaybackController.setRoute]で再構築する。
+     */
+    private val playbackController = PlaybackController(viewModelScope)
+    val playbackState: StateFlow<PlaybackController.State> = playbackController.state
+
     init {
         viewModelScope.launch { loadRoute(_selectedPeriod.value) }
     }
@@ -60,6 +69,11 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         _selectedPeriod.value = period
         viewModelScope.launch { loadRoute(period) }
     }
+
+    fun play() = playbackController.play()
+    fun pause() = playbackController.pause()
+    fun seekTo(progress: Float) = playbackController.seekTo(progress)
+    fun setSpeedMode(mode: SpeedMode) = playbackController.setSpeedMode(mode)
 
     /**
      * [period]に対応する`days`行をリポジトリから読み出し、日付昇順（＝時刻昇順）に結合して[_routePoints]へ反映する。
@@ -72,6 +86,11 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         }
         if (_selectedPeriod.value == period) {
             _routePoints.value = merged
+            if (merged == null) {
+                playbackController.setRoute(DoubleArray(0), DoubleArray(0), LongArray(0))
+            } else {
+                playbackController.setRoute(merged.latitudes, merged.longitudes, merged.timestampsMillis)
+            }
         }
     }
 

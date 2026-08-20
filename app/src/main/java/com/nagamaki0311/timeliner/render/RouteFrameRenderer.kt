@@ -88,9 +88,10 @@ object RouteFrameRenderer {
     /**
      * @param canvas 描画先。
      * @param screenCoordinates 画面座標へ変換済みの点列（`x0, y0, x1, y1, ...`、時刻昇順）。
-     * @param progress 描画する区間の進捗（0.0=先頭点のみ、1.0=全区間）。今回（T-006）は常に1.0で呼ぶ想定。
-     *   T-007でアニメーションの現在時刻に応じた値を渡す。
-     * @param currentPositionScreen 現在位置マーカーを描画する画面座標。nullなら描画しない。
+     * @param progress 描画する区間の進捗（0.0=先頭点のみ、1.0=全区間）。T-007で再生中の現在時刻に応じた
+     *   値を渡す（[com.nagamaki0311.timeliner.render.RouteOverlayView]）。
+     * @param currentPositionScreen 現在位置マーカーを描画する画面座標。[currentPositionAtProgress]で
+     *   [progress]と整合させて求めた値を渡すこと。nullなら描画しない。
      * @param dateTimeText 画面下部に表示する日時テキスト。nullなら描画しない。
      */
     fun draw(
@@ -109,6 +110,17 @@ object RouteFrameRenderer {
             drawDateTimeText(canvas, dateTimeText, style)
         }
         drawAttribution(canvas, style)
+    }
+
+    /**
+     * [progress]（0.0〜1.0）に対応する画面座標（区間途中は前後点の線形補間）を返す。
+     * [trimByProgress]の末尾点をそのまま使うことで、[draw]が描画するルート線の終端と
+     * 現在位置マーカーの位置を必ず一致させる（T-007）。点が無い場合はnull。
+     */
+    fun currentPositionAtProgress(screenCoordinates: FloatArray, progress: Float): ScreenPoint? {
+        val trimmed = trimByProgress(screenCoordinates, progress.coerceIn(0f, 1f))
+        if (trimmed.size < 2) return null
+        return ScreenPoint(trimmed[trimmed.size - 2], trimmed[trimmed.size - 1])
     }
 
     /**

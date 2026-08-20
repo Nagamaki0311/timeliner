@@ -26,9 +26,18 @@ class RouteOverlayView @JvmOverloads constructor(
     private var route: Route? = null
     private var dateTimeText: String? = null
 
+    /**
+     * 再生中の現在データ時刻（epochミリ秒、[com.nagamaki0311.timeliner.playback.PlaybackController]から設定）。
+     * nullの場合は全区間表示（T-006までの挙動、進捗1.0固定）にフォールバックする。
+     */
+    private var playbackDataTimeMillis: Long? = null
+
     private var cachedZoomBucket = Int.MIN_VALUE
     private var cachedSimplifiedWorldXs = DoubleArray(0)
     private var cachedSimplifiedWorldYs = DoubleArray(0)
+
+    /** [cachedSimplifiedWorldXs]/[cachedSimplifiedWorldYs]と同じインデックスに対応する時刻（時刻昇順）。 */
+    private var cachedSimplifiedTimestamps = LongArray(0)
     private var screenCoordinates = FloatArray(0)
 
     private val cameraMoveListener = MapLibreMap.OnCameraMoveListener { recomputeAndInvalidate() }
@@ -57,6 +66,15 @@ class RouteOverlayView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * 再生中の現在データ時刻を設定する（T-007）。ルート線をこの時刻まで描画し、現在位置マーカーを
+     * その地点へ移動する。nullを渡すと全区間表示（進捗1.0固定、T-006までの挙動）に戻る。
+     */
+    fun setPlaybackDataTimeMillis(dataTimeMillis: Long?) {
+        playbackDataTimeMillis = dataTimeMillis
+        invalidate()
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         recomputeAndInvalidate()
@@ -69,19 +87,40 @@ class RouteOverlayView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        val progress = currentProgress()
         RouteFrameRenderer.draw(
             canvas = canvas,
             screenCoordinates = screenCoordinates,
-            progress = 1f,
-            currentPositionScreen = currentPositionScreen(),
+            progress = progress,
+            currentPositionScreen = RouteFrameRenderer.currentPositionAtProgress(screenCoordinates, progress),
             dateTimeText = dateTimeText
         )
     }
 
-    private fun currentPositionScreen(): RouteFrameRenderer.ScreenPoint? {
-        if (screenCoordinates.size < 2) return null
-        val lastIndex = screenCoordinates.size - 2
-        return RouteFrameRenderer.ScreenPoint(screenCoordinates[lastIndex], screenCoordinates[lastIndex + 1])
+    /**
+     * [playbackDataTimeMillis]（現在データ時刻）を、[cachedSimplifiedTimestamps]上での位置（0.0〜1.0）へ
+     * 二分探索＋線形補間で変換する。未設定時は全区間表示（1.0）。
+     */
+    private fun currentProgress(): Float {
+        val dataTime = playbackDataTimeMillis ?: return 1f
+        val timestamps = cachedSimplifiedTimestamps
+        val pointCount = timestamps.size
+        if (pointCount <= 1) return 1f
+        if (dataTime <= timestamps[0]) return 0f
+        if (dataTime >= timestamps[pointCount - 1]) return 1f
+
+        val searchResult = timestamps.binarySearch(dataTime)
+        val exactIndex = if (searchResult >= 0) {
+            searchResult.toDouble()
+        } else {
+            val hi = (-searchResult - 1).coerceIn(1, pointCount - 1)
+            val lo = hi - 1
+            val tLo = timestamps[lo]
+            val tHi = timestamps[hi]
+            val fraction = if (tHi == tLo) 0.0 else (dataTime - tLo).toDouble() / (tHi - tLo).toDouble()
+            lo + fraction
+        }
+        return (exactIndex / (pointCount - 1)).toFloat().coerceIn(0f, 1f)
     }
 
     private fun recomputeAndInvalidate() {
@@ -116,6 +155,7 @@ class RouteOverlayView @JvmOverloads constructor(
             )
             cachedSimplifiedWorldXs = DoubleArray(keptIndices.size) { Mercator.longitudeToX(currentRoute.longitudes[keptIndices[it]]) }
             cachedSimplifiedWorldYs = DoubleArray(keptIndices.size) { Mercator.latitudeToY(currentRoute.latitudes[keptIndices[it]]) }
+            cachedSimplifiedTimestamps = LongArray(keptIndices.size) { currentRoute.timestampsMillis[keptIndices[it]] }
             cachedZoomBucket = zoomBucket
         }
 

@@ -17,6 +17,41 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-007 アニメーション再生と速度制御
+
+### 実施内容
+- `app/src/main/java/com/nagamaki0311/timeliner/playback/PlaybackTimeline.kt`（純Kotlin、Android API非依存）: データ時刻↔再生時刻の単調写像。内部表現は「区切り点の配列（`dataMillis[]`/`playbackMillis[]`、共に非減少）＋二分探索＋線形補間」（`LongArray.binarySearch`を使い、両配列を1つの`interpolate`関数で共用）。コンストラクタで両配列の非減少性を`require`で検証する（AGENTS.md原則6、二分探索の前提が壊れたら即座に失敗させる）。
+  - `buildAuto(timestampsMillis, latitudes, longitudes, targetDurationMillis, alpha=1.0, beta=1000.0)`: 関心度=α×経過ミリ秒+β×移動距離メートル（`Mercator.haversineDistanceMeters`、D-005の使い分けに従い実距離を使用）の累積を`targetDurationMillis`に正規化する。丸め誤差は最終点のみ強制的に一致させて吸収する（この補正は多点かつ関心度が正の場合のみ適用し、点数1の退化ケースには適用しない誤りを実装中に発見・修正済み。後述「懸念点」参照）。
+  - `buildManual(timestampsMillis, speedMultiplier)`: 先頭点からの経過データ時間を`speedMultiplier`で割った一定倍率の写像。
+  - `dataTimeAtPlaybackMillis`/`playbackMillisAtDataTime`の両方向を実装（タスク指示が明示的に両方向を要求していたため、公開API例には後者が無かったが追加した）。
+- `app/src/test/java/com/nagamaki0311/timeliner/playback/PlaybackTimelineTest.kt`: 単調性（137ms刻みで再生時刻を走査しデータ時刻が後退しないこと）、端点、自動モードの総再生時間正規化、自動モードでの滞在圧縮/移動区間の速度比較、手動モードの倍率、点数1・2・同一時刻2点の境界値、不正入力（速度0以下・目標時間0以下・空配列）を検証する14件を追加。
+- `app/src/main/java/com/nagamaki0311/timeliner/playback/PlaybackController.kt`: `PlaybackTimeline`を保持し再生・一時停止・シークを管理する。再生ループは`viewModelScope`（呼び出し元が渡す`CoroutineScope`）内で`delay(16ms)`のコルーチンループとして実装した（タスク指示「実装しやすい方でよい」に従い、Compose側の`withFrameNanos`は使わずこの方式のみを採用）。`SpeedMode`（`Auto(targetDurationMillis)`/`Manual(speedMultiplier)`）を`setSpeedMode`で切り替えると`PlaybackTimeline`を再構築する。総再生時間0（点数1等）では`play()`を無視するガードを追加。同ファイルに`PlaybackTimeFormat`（データ時刻のepochミリ秒→`yyyy/MM/dd HH:mm:ss`表示用フォーマット）を新設し、UI（`PlaybackControls`）と地図オーバーレイ（`RouteOverlayView`経由）の両方から共用する（新規ファイルを増やさず既存ファイルへ同居させた）。
+- `app/src/main/java/com/nagamaki0311/timeliner/render/RouteFrameRenderer.kt`: 既存の`trimByProgress`（private）を呼び出す公開関数`currentPositionAtProgress(screenCoordinates, progress)`を追加。ルート線の終端（`trimByProgress`の末尾点）と現在位置マーカーの座標を必ず一致させるための共通化（呼び出し元が別々に計算すると進捗の丸め方によってズレうる）。
+- `app/src/main/java/com/nagamaki0311/timeliner/render/RouteOverlayView.kt`: `setPlaybackDataTimeMillis(dataTimeMillis: Long?)`を追加。簡略化済み点列の時刻配列（`cachedSimplifiedTimestamps`、Douglas-Peucker後の点に対応する時刻をズームバケット変化時にのみキャッシュ、既存の`cachedSimplifiedWorldXs/Ys`と同じタイミングで更新）に対し、現在データ時刻を二分探索＋線形補間で「進捗（0.0〜1.0）」へ変換する`currentProgress()`を実装。`onDraw`は`progress=1f`固定をやめ、この`currentProgress()`と`RouteFrameRenderer.currentPositionAtProgress`を使うよう変更した。`playbackDataTimeMillis`未設定（null）時はT-006までと同じ「全区間表示」（進捗1.0）にフォールバックする。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/PlaybackControls.kt`（新規）: 再生/一時停止ボタン、シークバー（`Slider`、`state.progress`と双方向）、速度モード切り替え（自動/手動の2択＋各モードの候補値、いずれもテキストボタンで選択中のものを太字強調。アイコンフォント等の新規依存は追加しない）、現在のデータ日時表示。現在地の地名表示は行わない（`TimelineSegment.placeId`はDB上にあるが`routePoints`（点列のみ）に紐付いておらず追加の突合ロジックが必要なため、タスク指示の「無ければ省略してよい」に従い今回は見送り、既知の制約としてコード内コメントに明記）。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineViewModel.kt`: `PlaybackController(viewModelScope)`を保持し`playbackState: StateFlow<PlaybackController.State>`を公開。`loadRoute`が期間切替のたびに`playbackController.setRoute(...)`（データ無しの期間は空配列）を呼び`PlaybackTimeline`を再構築する。`play`/`pause`/`seekTo`/`setSpeedMode`をそのまま委譲する薄いラッパーを追加。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`: `PlaybackControls`を地図の下に配置。`playbackState.dataTimeMillis`を`RouteOverlayView.setPlaybackDataTimeMillis`へ、地図下部の日時テキストも「再生中のデータ時刻（`PlaybackTimeFormat`）優先、未設定時は期間ラベル」に変更した（T-008の動画書き出しでも同じ`RouteFrameRenderer`が焼き込みに使う想定のため、画面表示を先に animation-aware にしておく設計判断）。
+
+### 自動モードの挙動（設計意図の記録、タスク指示の要件）
+自動モードは「関心度」（`α×経過ミリ秒 + β×移動距離メートル`、既定値`α=1.0, β=1000.0`）の累積に対して再生時刻を等速に進める。既定値は「1mの移動 ≈ 1000msの滞在」と等価に扱う設定であり、GPS点間隔が数秒〜数十秒程度の一般的なトラッキング頻度において、数時間の滞在（関心度への寄与はほぼ`α×dt`のみ）は数百ミリ秒〜数秒の再生時間に圧縮される一方、実際に移動している区間（`β×distance`が加算される）は相対的に間延びしにくく、結果として「滞在・夜間は早送り、移動中は自然な速度に近い」という要件どおりの体感になる。総再生時間は常に`targetDurationMillis`（既定30秒、選択肢10/30/60/120秒）に正規化されるため、点数・移動距離の総量に関わらず動画の長さは一定になる。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（既存104件+新規`PlaybackTimelineTest`14件の計118件すべてパス）。
+- `./gradlew assembleDebug`が成功。
+- テストの制約（D-003/D-004/D-007と同種）: `PlaybackController.kt`はコルーチンの実時間ループ（`delay`/`System.nanoTime`）に依存し、`kotlinx-coroutines-test`（`runTest`等）が本プロジェクトに未導入のため単体テストを追加していない（新規テスト依存追加はAGENTS.md判定ラダー5「インストール済みの依存関係で解決できるか」に反するため見送った）。`RouteOverlayView.kt`/`RouteFrameRenderer.kt`は引き続き`android.view.View`/`android.graphics.Canvas`依存でJVM単体テスト対象外。タスク指示で明示された単体テスト要件（`PlaybackTimelineTest.kt`）は純Kotlinのため予定通り実装・全件パス済み。
+- 実機/エミュレータでの目視確認（再生ボタン・シークバー操作、アニメーションの滑らかさ、速度モード切替の見た目）は本セッションでは未実施（環境制約、T-002以降一貫した既知の制約）。
+
+### 懸念点（保守的判断で進めた不明点、Auto Mode下）
+- `PlaybackTimeline.buildAuto`の実装中、丸め誤差補正（最終点を`targetDurationMillis`へ強制的に一致させる行）を`totalInterest<=0`の退化分岐にも無条件で適用してしまうと、点数1のケースで`totalPlaybackMillis()`が`targetDurationMillis`（本来は0であるべき）になり、かつ`dataTimeAtPlaybackMillis`が二分探索の範囲外アクセスで`IllegalArgumentException`を投げるバグを実装直後の自己レビューで発見し、`else`節（`totalInterest>0`、必ず2点以上）内のみに補正を限定する形で修正済み（テスト`buildAuto_singlePoint_hasZeroDurationAndReturnsThatPointsTimestamp`で担保）。
+- 関心度の重み`α=1.0, β=1000.0`はタスク指示が「適当な既定値でよい」としていたため、実データでのチューニングは行っていない。極端に低頻度（点間隔が数分〜数十分）なGPSログでは、移動区間でも`α×dt`が支配的になり「移動中でも早送りされすぎる」体感になりうるが、これはGPS点間隔自体の粗さに起因するものであり、係数調整だけでは根本解決しない。実データでの検証（D-002項目2で既知の制約として記録済み）が可能になった時点で見直すのが妥当と判断し、今回は既定値のまま進めた。
+- 地図上の日時テキスト（`RouteOverlayView.setDateTimeText`）を「未再生時は期間ラベル、再生中はデータ時刻」に変更したのはタスク指示に明記が無い拡張（元の指示は`TimelineScreen`の進捗・現在位置マーカーの反映のみを求めていた）だが、T-008で同じ`RouteFrameRenderer`が動画フレームへ同種のテキストを焼き込む設計（D-002）と整合させる目的で行った。挙動として不自然ではないと判断したが、Reviewerの確認を求める。
+
+### 次回開始位置
+- T-008（アニメーションの動画書き出し）に着手する。`PlaybackTimeline.dataTimeAtPlaybackMillis`は既にフレームタイムスタンプ→データ時刻の変換にそのまま使える設計（画面再生と同一の写像を共有、D-002）。`RouteFrameRenderer.draw`/`currentPositionAtProgress`も画面・動画共通で使う想定のまま流用できる。
+
+### コミット
+- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット予定。Manager確認後にコミットして問題ない。
+
 ## 2026-08-20 T-006b T-006レビュー指摘の修正（座標変換スケール・UIスレッドDP・Paint/Path再利用）
 
 ### 実施内容

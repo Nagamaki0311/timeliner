@@ -25,7 +25,7 @@
 | T-005b | T-005レビュー指摘の修正（days上書き警告・SQLite変数上限・CancellationException） | 高 | 完了 | developer | D-006参照 |
 | T-006 | 地図上のルート表示＋期間指定（日/週/月/年） | 高 | 完了 | developer | RouteFrameRenderer（画面・動画共通描画関数）の新設。Reviewer指摘はT-006bで対応済み（D-007参照） |
 | T-006b | T-006レビュー指摘の修正（座標変換スケール・UIスレッドDP・Paint/Path再利用） | 高 | 完了 | developer | D-007参照 |
-| T-007 | アニメーション再生と速度制御 | 高 | 未着手 | developer | データ時刻↔再生時刻の単調写像、自動速度（非線形圧縮）・手動倍率 |
+| T-007 | アニメーション再生と速度制御 | 高 | 完了 | developer | データ時刻↔再生時刻の単調写像、自動速度（非線形圧縮）・手動倍率 |
 | T-008 | アニメーションの動画書き出し | 高 | 未着手 | developer | Media3 Transformer + BitmapOverlay。地図帰属表示の焼き込み必須（R8） |
 | T-009 | 仕上げ（エラー処理・a11y・性能確認・README） | 中 | 未着手 | developer | 大量点データでの性能確認、リリース手順の記載 |
 

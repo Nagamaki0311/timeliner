@@ -12,6 +12,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.nagamaki0311.timeliner.playback.PlaybackTimeFormat
 import com.nagamaki0311.timeliner.render.RouteOverlayView
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -26,6 +27,7 @@ import org.maplibre.android.maps.MapLibreMap
 fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
     val period by viewModel.selectedPeriod.collectAsStateWithLifecycle()
     val route by viewModel.routePoints.collectAsStateWithLifecycle()
+    val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
 
     var map by remember { mutableStateOf<MapLibreMap?>(null) }
     var overlayView by remember { mutableStateOf<RouteOverlayView?>(null) }
@@ -50,6 +52,12 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
                 modifier = Modifier.fillMaxSize()
             )
         }
+        PlaybackControls(
+            state = playbackState,
+            onPlayPause = { if (playbackState.isPlaying) viewModel.pause() else viewModel.play() },
+            onSeek = viewModel::seekTo,
+            onSpeedModeChange = viewModel::setSpeedMode
+        )
     }
 
     LaunchedEffect(route, overlayView) {
@@ -62,8 +70,14 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
         }
     }
 
-    LaunchedEffect(period, overlayView) {
-        overlayView?.setDateTimeText(period.label())
+    // 地図下部に焼き込む日時テキストは、再生中の現在データ時刻（[playbackState.dataTimeMillis]、
+    // T-008の動画書き出しでも同じRouteFrameRendererが使う想定）を優先し、未再生時は期間ラベルへフォールバックする。
+    LaunchedEffect(period, playbackState.dataTimeMillis, overlayView) {
+        overlayView?.setDateTimeText(playbackState.dataTimeMillis?.let(PlaybackTimeFormat::format) ?: period.label())
+    }
+
+    LaunchedEffect(playbackState.dataTimeMillis, overlayView) {
+        overlayView?.setPlaybackDataTimeMillis(playbackState.dataTimeMillis)
     }
 
     LaunchedEffect(route, map) {
