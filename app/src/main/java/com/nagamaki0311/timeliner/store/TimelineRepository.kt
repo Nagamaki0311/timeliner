@@ -54,26 +54,46 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
     )
 
     /**
-     * [track]をクリーニングし、日単位に分割して`days`/`segments`へ書き込む。
+     * [prepareImport]の結果。書き込み対象の日単位データ・セグメント一覧と、
+     * 書き込みによって上書きされる既存`days`行の日数（[overwriteDayCount]）を保持する。
+     * [overwriteDayCount]が0より大きい場合、[commitImport]の実行前に呼び出し側（UI）が
+     * ユーザーへの確認を挟むことを想定する（docs/decisions.md D-006）。
+     */
+    class PreparedImport internal constructor(
+        internal val dayGroups: List<DayGroup>,
+        internal val segments: List<TimelineSegment>,
+        val pointCount: Int,
+        val overwriteDayCount: Int
+    )
+
+    /**
+     * [track]をクリーニングし、日単位に分割した上で、書き込み対象日付のうち
+     * 既存`days`行を持つ日数（[PreparedImport.overwriteDayCount]）を検出する。
+     * この時点ではDBへの書き込みは行わない（[commitImport]を別途呼ぶこと）。
+     */
+    fun prepareImport(track: RawTrack, options: CleanOptions = CleanOptions()): PreparedImport =
+        buildPreparedImport(track, options) { dates -> existingDates(dbHelper.readableDatabase, dates) }
+
+    /**
+     * [prepareImport]で準備した内容を実際に`days`/`segments`へ書き込む。
      * 同じ日付・同じセグメント由来の既存行は上書きする（再インポートに対する冪等性）。
      * トランザクション内で実行するため、大量`INSERT`でも書き込みが高速。
      */
-    fun importTrack(track: RawTrack, options: CleanOptions = CleanOptions()): ImportResult {
-        val cleaned = TrackCleaner.clean(track, options)
-        val dayGroups = groupPointsByLocalDate(cleaned)
-        val segmentDates = track.segments.map { localDateOf(it.startTimeMillis) }.toSet()
-
+    fun commitImport(prepared: PreparedImport): ImportResult {
         val db = dbHelper.writableDatabase
         db.beginTransaction()
         try {
-            for (group in dayGroups) {
+            for (group in prepared.dayGroups) {
                 writeDayRow(db, group)
             }
+            val segmentDates = prepared.segments.map { localDateOf(it.startTimeMillis) }.toSet()
             if (segmentDates.isNotEmpty()) {
-                val placeholders = segmentDates.joinToString(",") { "?" }
-                db.delete(TimelineDb.TABLE_SEGMENTS, "date IN ($placeholders)", segmentDates.toTypedArray())
+                for (chunk in segmentDates.chunked(SQLITE_IN_CLAUSE_CHUNK_SIZE)) {
+                    val placeholders = chunk.joinToString(",") { "?" }
+                    db.delete(TimelineDb.TABLE_SEGMENTS, "date IN ($placeholders)", chunk.toTypedArray())
+                }
             }
-            for (segment in track.segments) {
+            for (segment in prepared.segments) {
                 writeSegmentRow(db, segment)
             }
             db.setTransactionSuccessful()
@@ -82,11 +102,11 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
         }
 
         return ImportResult(
-            dayCount = dayGroups.size,
-            pointCount = cleaned.pointCount,
-            segmentCount = track.segments.size,
-            earliestDate = dayGroups.minOfOrNull { it.date },
-            latestDate = dayGroups.maxOfOrNull { it.date }
+            dayCount = prepared.dayGroups.size,
+            pointCount = prepared.pointCount,
+            segmentCount = prepared.segments.size,
+            earliestDate = prepared.dayGroups.minOfOrNull { it.date },
+            latestDate = prepared.dayGroups.maxOfOrNull { it.date }
         )
     }
 
@@ -182,11 +202,35 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
         db.insert(TimelineDb.TABLE_SEGMENTS, null, values)
     }
 
-    private fun localDateOf(millis: Long): String =
-        Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+    /**
+     * [dates]のうち`days`テーブルに既存行がある日付の集合を返す。
+     * Android標準SQLiteの`SQLITE_MAX_VARIABLE_NUMBER=999`を超えないよう
+     * [SQLITE_IN_CLAUSE_CHUNK_SIZE]件ずつに分割して複数回`SELECT`する（docs/decisions.md D-006）。
+     */
+    private fun existingDates(db: SQLiteDatabase, dates: List<String>): Set<String> {
+        if (dates.isEmpty()) return emptySet()
+        val result = mutableSetOf<String>()
+        for (chunk in dates.distinct().chunked(SQLITE_IN_CLAUSE_CHUNK_SIZE)) {
+            val placeholders = chunk.joinToString(",") { "?" }
+            db.query(
+                TimelineDb.TABLE_DAYS,
+                arrayOf("date"),
+                "date IN ($placeholders)",
+                chunk.toTypedArray(),
+                null,
+                null,
+                null
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    result.add(cursor.getString(0))
+                }
+            }
+        }
+        return result
+    }
 
     /** 日付ごとに分割した点列と、その日内で連続する点間の実距離合計。 */
-    private class DayGroup(
+    internal class DayGroup(
         val date: String,
         val latitudes: DoubleArray,
         val longitudes: DoubleArray,
@@ -194,50 +238,79 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
         val distanceMeters: Double
     )
 
-    /**
-     * [cleaned]（時刻昇順）を端末タイムゾーンでのローカル日付ごとに分割する。
-     * [CleanedTrack.segmentStartIndices]（長時間欠損での分断点）をまたぐ点同士は距離を合算しない
-     * （実際には移動していない区間を距離に含めないため）。
-     */
-    private fun groupPointsByLocalDate(cleaned: CleanedTrack): List<DayGroup> {
-        val size = cleaned.pointCount
-        if (size == 0) return emptyList()
+    companion object {
+        /**
+         * Android標準SQLiteの`SQLITE_MAX_VARIABLE_NUMBER=999`を超えないための、
+         * `IN`句1回あたりのプレースホルダ上限（安全マージンを見て900、docs/decisions.md D-006）。
+         */
+        private const val SQLITE_IN_CLAUSE_CHUNK_SIZE = 900
 
-        val isTrackBreak = BooleanArray(size)
-        for (start in cleaned.segmentStartIndices) {
-            if (start > 0) isTrackBreak[start] = true
+        /**
+         * [prepareImport]の本体。既存日付の検出手段を[existingDatesLookup]として注入できるようにし、
+         * DBに依存しない部分（クリーニング・日付分割・上書き件数の算出）を[TimelineDb]を介さずに
+         * 単体テスト可能にする（[TimelineDb]はコンストラクタ自体がAndroid API（`SQLiteOpenHelper`）に
+         * 依存するため、JVM単体テストからは実インスタンスを用意できない）。
+         */
+        internal fun buildPreparedImport(
+            track: RawTrack,
+            options: CleanOptions,
+            existingDatesLookup: (List<String>) -> Set<String>
+        ): PreparedImport {
+            val cleaned = TrackCleaner.clean(track, options)
+            val dayGroups = groupPointsByLocalDate(cleaned)
+            val existing = existingDatesLookup(dayGroups.map { it.date })
+            val overwriteDayCount = dayGroups.count { it.date in existing }
+            return PreparedImport(dayGroups, track.segments, cleaned.pointCount, overwriteDayCount)
         }
 
-        val groups = mutableListOf<DayGroup>()
-        var groupStart = 0
-        while (groupStart < size) {
-            val date = localDateOf(cleaned.timestampsMillis[groupStart])
-            var groupEnd = groupStart
-            while (groupEnd + 1 < size && localDateOf(cleaned.timestampsMillis[groupEnd + 1]) == date) {
-                groupEnd++
+        private fun localDateOf(millis: Long): String =
+            Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+
+        /**
+         * [cleaned]（時刻昇順）を端末タイムゾーンでのローカル日付ごとに分割する。
+         * [CleanedTrack.segmentStartIndices]（長時間欠損での分断点）をまたぐ点同士は距離を合算しない
+         * （実際には移動していない区間を距離に含めないため）。
+         */
+        private fun groupPointsByLocalDate(cleaned: CleanedTrack): List<DayGroup> {
+            val size = cleaned.pointCount
+            if (size == 0) return emptyList()
+
+            val isTrackBreak = BooleanArray(size)
+            for (start in cleaned.segmentStartIndices) {
+                if (start > 0) isTrackBreak[start] = true
             }
 
-            var distance = 0.0
-            for (i in groupStart until groupEnd) {
-                if (!isTrackBreak[i + 1]) {
-                    distance += Mercator.haversineDistanceMeters(
-                        cleaned.latitudes[i], cleaned.longitudes[i],
-                        cleaned.latitudes[i + 1], cleaned.longitudes[i + 1]
-                    )
+            val groups = mutableListOf<DayGroup>()
+            var groupStart = 0
+            while (groupStart < size) {
+                val date = localDateOf(cleaned.timestampsMillis[groupStart])
+                var groupEnd = groupStart
+                while (groupEnd + 1 < size && localDateOf(cleaned.timestampsMillis[groupEnd + 1]) == date) {
+                    groupEnd++
                 }
-            }
 
-            groups.add(
-                DayGroup(
-                    date = date,
-                    latitudes = cleaned.latitudes.copyOfRange(groupStart, groupEnd + 1),
-                    longitudes = cleaned.longitudes.copyOfRange(groupStart, groupEnd + 1),
-                    timestampsMillis = cleaned.timestampsMillis.copyOfRange(groupStart, groupEnd + 1),
-                    distanceMeters = distance
+                var distance = 0.0
+                for (i in groupStart until groupEnd) {
+                    if (!isTrackBreak[i + 1]) {
+                        distance += Mercator.haversineDistanceMeters(
+                            cleaned.latitudes[i], cleaned.longitudes[i],
+                            cleaned.latitudes[i + 1], cleaned.longitudes[i + 1]
+                        )
+                    }
+                }
+
+                groups.add(
+                    DayGroup(
+                        date = date,
+                        latitudes = cleaned.latitudes.copyOfRange(groupStart, groupEnd + 1),
+                        longitudes = cleaned.longitudes.copyOfRange(groupStart, groupEnd + 1),
+                        timestampsMillis = cleaned.timestampsMillis.copyOfRange(groupStart, groupEnd + 1),
+                        distanceMeters = distance
+                    )
                 )
-            )
-            groupStart = groupEnd + 1
+                groupStart = groupEnd + 1
+            }
+            return groups
         }
-        return groups
     }
 }

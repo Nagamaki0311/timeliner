@@ -17,6 +17,33 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-005b T-005レビュー指摘の修正（days上書き警告・SQLite変数上限・CancellationException）
+
+### 実施内容
+D-006の決定に従い、`app/src/main/java/com/nagamaki0311/timeliner/store/TimelineRepository.kt`・`ui/TimelineViewModel.kt`・`ui/ImportScreen.kt`を修正した。
+
+- **Medium: daysテーブルの無警告上書き**
+  - `TimelineRepository.importTrack`を`prepareImport`（クリーニング→日付分割→上書き対象日数の検出、DB書き込みなし）と`commitImport`（実際の`days`/`segments`書き込み）に分割した。`prepareImport`の戻り値`PreparedImport`は`overwriteDayCount`（書き込み対象日付のうち既存`days`行を持つ日数）を保持する。
+  - `TimelineViewModel.importFrom`は`prepareImport`の結果、`overwriteDayCount > 0`なら`pendingImport`にPreparedImportを保持したまま`ImportUiState.ConfirmOverwrite(overwriteDayCount)`を発行し、`0`ならそのまま`commitImport`まで実行する。新設した`confirmOverwrite()`/`cancelImport()`をUIから呼べるようにした。
+  - `ImportScreen`は`ImportUiState.ConfirmOverwrite`表示時に標準の`AlertDialog`（「N日分の既存データを置き換えます。よろしいですか？」、続行/キャンセルの2ボタン）を表示する。続行で`confirmOverwrite()`、キャンセル・ダイアログ外タップいずれも`cancelImport()`（`Idle`へ戻る、書き込みは行わない）を呼ぶ。
+- **Low: SQLite変数上限（999）超過**
+  - `segments`削除の`IN`句生成（`commitImport`）と、新設した既存日付検出クエリ（`existingDates`）の両方で、対象日付集合を`SQLITE_IN_CLAUSE_CHUNK_SIZE=900`件ずつ`chunked()`し、複数回`delete`/`query`を発行する形にした（`SQLITE_MAX_VARIABLE_NUMBER=999`に対し安全マージンを見た900）。
+- **Low: CancellationExceptionの握りつぶし**
+  - `TimelineViewModel`の`runCatching { withContext(Dispatchers.IO) { ... } }`パターンを`try { ... } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) { ... }`に置き換えた（`importFrom`本体・新設`commitPreparedImport`の両方）。`CancellationException`は再送出し、それ以外の例外のみ`ImportUiState.Error`へ変換する。
+- **設計上の変更点（テスト容易性のため）**: `TimelineRepository`のクリーニング・日付分割ロジック（旧`groupPointsByLocalDate`/`localDateOf`）と、上書き日数算出ロジックを`internal fun buildPreparedImport(track, options, existingDatesLookup: (List<String>) -> Set<String>)`としてcompanion objectへ切り出した。既存日付の検出手段（DB問い合わせ）をラムダとして注入できるようにしたことで、DBに依存しない部分（＝D-006決定1の中核ロジック）を`TimelineRepository`のインスタンス化すら不要な形でJVM単体テストから直接検証できるようにした。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（既存72件+新規`TimelineRepositoryTest`4件の計76件すべてパス）。
+- `./gradlew assembleDebug`が成功。
+- テストの制約: `TimelineRepository`本体は`TimelineDb`（`android.database.sqlite.SQLiteOpenHelper`のサブクラス）に依存し、そのコンストラクタ自体がAndroid APIを呼ぶため、JVM単体テストからは`TimelineDb`/`TimelineRepository`のインスタンスを一切生成できない（D-003・T-005レビューと同種の制約）。そのため`prepareImport`/`commitImport`の実DB書き込み経路（`writeDayRow`/`writeSegmentRow`/`existingDates`が実際にSQLiteへアクセスする部分）自体はコードレビューによる確認に留まり、自動テストは追加できていない。上書き確認ダイアログ（`ImportScreen`の`AlertDialog`表示・ボタン動作）も同様に実機・エミュレータでの目視確認ができておらず未実施（既存のJVM単体テストの枠組みではComposeのUIレンダリングを検証できない）。
+- 新設した`TimelineRepositoryTest.kt`（4件）は、`TimelineRepository.buildPreparedImport`（companion objectのinternal関数、既存日付検出をラムダ注入で差し替え可能）を通じて、実際の`TrackCleaner.clean`→日付分割→上書き日数算出という本番コードパスをDBなしで検証した（上書きなし→0件、対象日の一部が既存→その日数分、全対象日が既存→全日数分、範囲外の日付が「既存」扱いに含まれていても無視されること、の4パターン）。
+
+### 次回開始位置
+- T-006（地図上のルート表示＋期間指定）に着手する。`TimelineRepository.queryDays`/`querySegments`の出力を使って地図描画・期間指定UIを実装する想定（変更なし、T-005時点の次回開始位置を踏襲）。
+
+### コミット
+- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット予定（Manager確認後）。
+
 ## 2026-08-20 T-005 永続化とインポート導線
 
 ### 実施内容
