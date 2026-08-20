@@ -192,3 +192,32 @@
 ### 影響
 - 以降、`TimelineRepository`の書き込みAPIは「上書き対象の検出」を呼び出し元へ返す設計になる。T-006以降でインポート導線に手を加える場合はこの契約を維持する。
 
+---
+
+## D-007: T-006レビュー指摘への対応方針（座標変換のスケール誤り、UIスレッドでのDP同期実行、Paint/Pathの再利用）
+
+- 日付: 2026-08-19
+- 状態: 採用
+
+### 背景
+- T-006（地図上のルート表示＋期間指定）のレビューで、Reviewerが3件の重要な問題を検出した。
+  1. High/PLAUSIBLE: `RouteOverlayView`がワールド座標→画面座標変換に使う`metersPerPixel`を`MapLibreMap.projection.getMetersPerPixelAtLatitude(target.latitude)`から取得しているが、この値は緯度に応じて`cos(緯度)`倍で変動する「実世界距離」基準のスケールである。一方`Mercator.longitudeToX/latitudeToY`が返すワールド座標はWebメルカトル**投影**座標（緯度に依存しない一定スケールでMapLibre自身が描画に使う空間）であり、両者を単純に組み合わせると赤道以外（日本を含む）でルート線が実際の地図・GPS軌跡から系統的にズレる（例: 北緯35.68度で約1.23倍）。地図上へのルート表示という要件の中核が満たされない。
+  2. High/CONFIRMED: `Simplifier.simplify`（Douglas-Peucker簡略化）が`maxPointCount`引数なし（無制限）で、`OnCameraMoveListener`のコールバック内、すなわちUIスレッド上で同期的に呼ばれている。期間全体の未簡略化点列（数万〜十万点規模になりうる）に対し、カメラのease中・ピンチズーム中に何度も再実行されうり、ANR・カクつきのリスクがある。
+  3. Medium/CONFIRMED: `RouteFrameRenderer`の`drawRoute`/`drawMarker`/`drawDateTimeText`/`drawAttribution`が呼び出しのたびに新しい`Paint`・`Path`オブジェクトを生成しており、`onDraw`のたびにアロケーションが発生する（Android Lintの`DrawAllocation`が警告する典型的アンチパターン）。T-008（動画書き出し）で同じ`RouteFrameRenderer`を数百〜数千フレーム分連続描画する設計であるため、その際に問題が深刻化する。
+- 加えてLow 2件（週ラベルの年またぎテスト未追加、fitBoundsが実質同一地点の複数点で極端ズームになりうる可能性）を検出したが、影響が軽微なためバックログへ記録するに留める。
+
+### 決定
+1. `RouteOverlayView`の`metersPerPixel`計算を、緯度に依存しない投影空間のスケールへ修正する。最小修正として`getMetersPerPixelAtLatitude(0.0)`（赤道固定、`cos(0)=1`により投影メートル/ピクセルと一致する）を使う。
+2. `RouteOverlayView`の`Simplifier.simplify`呼び出しに妥当な`maxPointCount`（画面幅ピクセル数のオーダー、例: 2000〜4000点程度）を渡し、無制限の入力サイズでの実行を防ぐ。DP自体をUIスレッド外（`Dispatchers.Default`のコルーチン等）へ逃がす非同期化は、実装コストと必要性を見て可能なら行うが、必須はmaxPointCount指定とする。
+3. `RouteFrameRenderer`が使う`Paint`・`Path`オブジェクトを呼び出しのたびに生成せず、キャッシュ（`Style`データクラスに`by lazy`で持たせる、またはインスタンス変数として使い回す）する設計に変更する。
+4. Low 2件（週ラベルの年またぎテスト、fitBoundsの実質同一地点フォールバック）は今回対応せず、docs/tasks.mdのバックログへ記録する。
+
+### 理由
+- 1・2はいずれも要件の中核（地図上へのルート表示、大量データでも実用的な速度で動作すること）に直結し、AGENTS.md原則8「手を抜かない対象」に該当するため必須修正とする。
+- 3はT-008で同じレンダラーを高頻度に再利用する設計上の前提があり、後回しにするとT-008側の実装・パフォーマンスチューニングがより困難になる（根本原因を今直す方が手戻りが少ない）。
+- Low 2件はREVIEW.mdの過剰指摘抑制ルールに該当し、クラッシュ耐性は確認済み・影響が特定の稀なケースに限定されるため、今は対応を見送る。
+
+### 影響
+- 以降、地図オーバーレイの座標変換ロジックを変更する場合は「投影空間で一定スケールを使う」という前提を維持する。
+- `RouteFrameRenderer`のPaint/Pathキャッシュ設計は、T-008の動画書き出し実装でもそのまま再利用する。
+
