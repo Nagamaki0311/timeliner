@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!--
+      MapLibre Native Android（地図SDK）は、自身のマニフェストで位置情報権限
+      （ACCESS_FINE_LOCATION/ACCESS_COARSE_LOCATION）を宣言している（現在地表示機能=LocationComponent向け）。
+      本アプリはインポートした過去の位置情報データの可視化のみを行い、端末の現在位置を一切取得しない
+      （AGENTS.md原則8のセキュリティ・プライバシー、docs/tasks.md T-009）ため、マニフェストマージで除外する。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
 
     <application
         android:allowBackup="true"

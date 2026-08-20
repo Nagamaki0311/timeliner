@@ -175,11 +175,20 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     /**
      * [period]に対応する`days`行をリポジトリから読み出し、日付昇順（＝時刻昇順）に結合して[_routePoints]へ反映する。
      * 読み込み中に[selectPeriod]で別の期間へ切り替わっていた場合、古い結果で上書きしない（連打対策）。
+     * DB破損等（[PointBlobCodec.decode]の`require`失敗や`android.database.sqlite.SQLiteException`）で
+     * 読み込みに失敗した場合、クラッシュさせずその期間はデータ無し（`null`）として扱う（docs/tasks.md T-009）。
      */
     private suspend fun loadRoute(period: Period) {
-        val merged = withContext(Dispatchers.IO) {
-            val days = repository.queryDays(period.startDate.toString(), period.endDate.toString())
-            if (days.isEmpty()) null else mergeDayPoints(days)
+        val merged = try {
+            withContext(Dispatchers.IO) {
+                val days = repository.queryDays(period.startDate.toString(), period.endDate.toString())
+                if (days.isEmpty()) null else mergeDayPoints(days)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            android.util.Log.w(TAG, "選択期間のルート読み込みに失敗しました: ${e.message}", e)
+            null
         }
         if (_selectedPeriod.value == period) {
             _routePoints.value = merged
@@ -250,6 +259,8 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     }
 
     companion object {
+        private const val TAG = "TimelineViewModel"
+
         /** [TimelineRepository.DayRecord]のリスト（日付昇順）を1つの点列へ結合する。日付順＝時刻順であるため単純連結でよい。 */
         private fun mergeDayPoints(days: List<TimelineRepository.DayRecord>): PointBlobCodec.DecodedPoints {
             val totalCount = days.sumOf { it.points.latitudes.size }

@@ -17,6 +17,59 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-009 仕上げ（エラー処理・a11y・性能確認・README）
+
+### 実施内容
+
+**1. エラーハンドリング点検**
+- `ImportScreen`/`TimelineScreen`/`ExportDialog`とその裏側（`TimelineViewModel`/`TimelineRepository`/`ImportSource`/`TimelineJsonParser`/`VideoExporter`/`VideoOutput`）を横断的に確認した。壊れたファイル（不正JSON・不正zip）、空データ（0点0セグメント、既知のNitとしてD-006で見送り済み）、ストレージ不足（DB書き込み・MediaStore書き込みの両方で`try/catch`によりUIへ伝播）、ファイルアクセス失敗（`SecurityException`等）はいずれも既存の`try/catch (CancellationException) → throw` / `catch (Exception) → UiState.Error`パターンで捕捉されクラッシュしないことを確認した（minSdk 29のためストレージ関連のランタイム権限リクエストは元々不要、SAFファイルピッカーのキャンセルは`uri?.let{}`で単に無視される設計）。
+- **発見・修正**: `TimelineViewModel.loadRoute`（`init`時と`selectPeriod`のたびに呼ばれる、`TimelineScreen`表示のたびに実行される中核パス）に`try/catch`が一切無いことを発見した。`repository.queryDays`が`SQLiteException`（DB破損等）や`PointBlobCodec.decode`の`require`失敗（BLOBサイズ不正、理論上は自前で書いたデータのみのため通常発生しないが、DBファイルの外部改変・破損時には起こりうる）を投げると、`viewModelScope.launch`内の未捕捉例外としてアプリがクラッシュする経路だった。これは「地図」タブを開くたび・期間を切り替えるたびに通る主要パスであり、他の箇所（`importFrom`/`commitPreparedImport`/`exportVideo`）が一貫して守っている「クラッシュさせずUIへ伝える」という原則から外れていたため、`app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineViewModel.kt`の`loadRoute`を`try/catch(CancellationException) → throw` / `catch(Exception) → ログ出力しnull（データ無し扱い）`で囲むよう修正した。既存の`ImportUiState`/`ExportUiState`と異なり、ルート読み込み失敗専用のUI状態は新設せず「データ無し（`null`）」という既存の正常系の表現に合流させた（該当期間にデータが無い場合と見分けはつかないが、クラッシュを防ぐことが目的であり、新規UI状態追加は過剰と判断、AGENTS.md判定ラダー1）。
+
+**2. アクセシビリティ確認・修正**
+- 全Compose画面（`ImportScreen`/`TimelineScreen`/`PlaybackControls`/`PeriodSelector`/`ExportDialog`）を確認した。`Icon`/`IconButton`は1つも使われておらず、すべてのボタン・タブがテキストラベル（`Text`）を持つため、標準的なスクリーンリーダー（TalkBack）は各要素の役割を読み上げられる。カスタムView（`RouteOverlayView`）は`onTouchEvent`を実装しておらず描画専用で、タッチ操作を提供しない（タスク指示の想定通り）。
+- タッチターゲットサイズ: すべてMaterial3標準コンポーネント（`Button`/`TextButton`/`Tab`/`Slider`）を素のまま使っており、独自の小さい`Modifier.size`指定は無いため、Material3の既定最小タッチターゲット（48dp）がそのまま適用される。
+- 文字サイズ: Compose側のテキストはすべて`MaterialTheme.typography.*`（既定でsp単位）を使っており、`dp`でのフォントサイズ指定は無い（システムの文字サイズ設定に追従する）。`RouteFrameRenderer`（`android.graphics.Canvas`へ地図オーバーレイ・動画フレームとして焼き込む日時テキスト等）はpx単位の`Paint.textSize`を使っているが、これは端末の地図表示・動画のピクセル座標に対して物理的に一定の大きさで焼き込む必要がある装飾要素であり、システムの動的文字サイズに追従すべき「読み上げ対象のUIテキスト」ではないため対象外と判断した（画面上の対応する情報＝現在データ日時は`PlaybackControls`の`Text`としてもComposeで別途表示済みで、そちらはsp単位で動的文字サイズに追従する）。
+- **発見・修正**: `PlaybackControls`の`Slider`（シークバー）に説明が無く、TalkBackでは進捗値のみが読み上げられ「何を操作しているか」が伝わらなかったため、`Modifier.semantics { contentDescription = "再生位置" }`を追加した。
+
+**3. 大量位置情報での性能確認**
+- 一時的なベンチマークテスト（`EndToEndPerformanceBenchmark.kt`、T-004/T-005と同じ「実行して記録後に削除する」方針）を追加し、合成データ（15万点、21日分に相当するランダムウォーク＋20,000点ごとに7時間欠損、Records.json形式のJSONテキスト約12MB）に対して以下を計測した後、削除した。
+  - `TimelineJsonParser.parseJson`: 約1.6秒（150,000点）
+  - `TrackCleaner.clean`: 約190ms（出力108,377点、8セグメント）
+  - `TimelineRepository.buildPreparedImport`（日単位分割＋上書き検出、DB無し）: 約151ms（24日分。日付境界の関係で21日の範囲が24日分の`days`行に分かれた）
+  - `PointBlobCodec.encode`（全日分）: 約14ms、合計約1.65MB
+  - `PointBlobCodec.decode`（全日分）: 約4ms
+  - 期間結合（`TimelineViewModel.mergeDayPoints`相当、年表示等で複数日を結合する処理）: 約0ms（108,377点）
+  - `Simplifier.simplify`（`RouteOverlayView`/`VideoExporter`と同じ`maxPointCount=3000`、広域表示を想定したepsilon）: 約100ms、出力1,214点
+  - `PlaybackTimeline.buildAuto`（画面再生・動画書き出し共通の写像構築）: 約24ms
+  - 合計（パース〜クリーニング〜日次分割〜BLOBエンコード〜期間結合〜簡略化〜再生写像構築）: 約2.1秒
+  - **計測できなかった部分（既知の制約、D-003と同種）**: 実際のSQLite `INSERT`トランザクション、MapLibreのタイル描画・カメラ操作・実際の`Simplifier`呼び出し頻度（`OnCameraMoveListener`経由）、Media3 Transformerの実エンコード、`Canvas.onDraw`の実描画フレームレートは、いずれも実機/エミュレータが必要なためJVM単体テスト環境では計測不可。UIの体感速度そのものは未確認である旨をREADME「既知の制約」にも明記した。
+  - 上記より、15万点・複数週にまたがる規模でも「パース〜表示直前までの前処理」が約2秒程度で完了することを確認し、T-004（10万点・113ms、クリーニング〜簡略化のみ）・T-005（10万点・1.9秒、パース〜BLOBエンコードまで）の既存計測値と整合する傾向（点数に対しほぼ線形、実用的な速度）であることを確認した。
+
+**4. APKビルドの最終確認**
+- `./gradlew assembleDebug`成功、`app/build/outputs/apk/debug/app-debug.apk`（デバッグ署名済み）を`/opt/android-sdk/build-tools/36.1.0/aapt dump badging`で検証し、`package name='com.nagamaki0311.timeliner'`・`minSdkVersion:'29'`・`targetSdkVersion:'36'`等が正しく認識できる正常なAPK形式であることを確認した。
+- **発見・修正**: `aapt dump badging`の出力に、本アプリの`AndroidManifest.xml`には一切記載していない`ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`（ランタイム許可を要する「dangerous」権限）が含まれていることを発見した。調査の結果、MapLibre Native Android SDK自身のマニフェストが任意機能（現在地表示、本アプリは未使用）向けに宣言しており、マニフェストマージで自動的に統合されていたと判明した（本アプリのコードに位置情報APIの呼び出しが無いことをgrepで確認済み）。要件が明記する「位置情報データを端末内で完結させる」というプライバシー重視の設計意図と整合しないため、`AndroidManifest.xml`に`tools:node="remove"`でこの2権限を除外した（詳細・理由はdocs/decisions.md D-011）。除外後も`INTERNET`/`ACCESS_NETWORK_STATE`等の地図タイル取得に必要な権限は保持され、ビルド・`aapt dump badging`とも問題ないことを確認した。
+- `./gradlew assembleRelease`を実行したところ**成功**した（失敗しなかった）。`signingConfig`未設定のため`app/build/outputs/apk/release/app-release-unsigned.apk`（R8難読化・圧縮済みだが未署名）が生成される。未署名のAPKはAndroidにインストールできないため、実機配布には別途keystoreでの署名が必要（本タスクではkeystoreを新規作成・コミットしない指示のため、署名手順のみREADMEに記載した）。
+
+**5. README.mdの整備**
+- `README.md`に「Androidアプリのビルド」（必要環境・`assembleDebug`・単体テスト）、「実機へのインストール」（`adb install`・手動転送）、「対応しているタイムラインJSON形式」（4形式の一覧表とエクスポート方法）、「リリース署名」（keystore作成・`signingConfigs`追加例・環境変数経由でのパス/パスワード注入、keystoreファイル自体はコミットしない旨を明記）、「既知の制約」（実機/エミュレータ未確認、実データ未検証、大量データの体感速度未確認）を追記した。末尾の「アプリ本体のソースコード構成」プレースホルダも、実装済みパッケージ構成（`data/parser`/`model`/`process`/`store`/`playback`/`render`/`export`/`ui`）の概要で埋めた。既存の開発方針・Agent構成に関する記述（AGENTS.md/REVIEW.md等への参照、Agent構成の説明）は変更していない。
+
+**6. 完了条件の総点検**
+- docs/tasks.mdのT-001〜T-008bはすべて「完了」であることを確認した（本エントリ末尾のタスク一覧更新でT-009も「完了」にする）。
+- docs/decisions.mdに記録された既知の制約・見送り事項（D-002の実データ未検証、D-003以来の実機/エミュレータ未確認、D-006/D-007/D-008/D-010bのLow/Nit見送り項目）を再確認したところ、いずれも「機能的な破綻が無い」「発生頻度が低い」「統計表示等の副次的な誤差に留まる」という理由で意図的に見送られたものであり、ユーザーの元の要件（タイムラインJSONの読み込み、地図上への移動ルート表示、期間指定、アニメーション再生、速度制御、動画書き出し、大量位置情報での実用速度、APKビルド・実機インストール可能）を損なうものは無いと判断した。
+- 実機/エミュレータでの動作確認・実データでの検証は、本開発環境（Android実機・エミュレータが利用できないサンドボックス）の制約により本タスクでも実施できていない。これはD-002・D-003以来一貫して記録されている既知の制約であり、README.md「既知の制約」に集約して明記した。
+
+### 結果
+- `./gradlew testDebugUnitTest`成功（既存129件、本タスクでのコード変更（`TimelineViewModel.loadRoute`のtry/catch追加、`PlaybackControls`のSlider contentDescription追加、`AndroidManifest.xml`の権限除外）はいずれもAndroid API依存またはCompose UI依存のためJVM単体テストの対象外（D-003と同種の制約）で新規テストは追加していない。一時追加したベンチマークテストは記録後に削除済み）。
+- `./gradlew assembleDebug`成功。`aapt dump badging`でAPKの妥当性・マニフェスト内容（位置情報権限の除外含む）を確認した。
+- `./gradlew assembleRelease`成功（未署名APK生成、署名は本タスクのスコープ外）。
+
+### 懸念点（保守的判断で進めた不明点、Auto Mode下）
+- `TimelineViewModel.loadRoute`の失敗時、専用のエラーUI状態を新設せず「データ無し」に合流させた設計は、DB破損等の重大な問題が発生していてもユーザーからは単に「その期間にデータが無い」ように見え、根本原因（DB破損）に気づきにくいというトレードオフがある。`android.util.Log.w`でログには残るため開発者は気づけるが、エンドユーザー向けの通知は無い。要件上、ルート表示専用のエラーバナー等の追加UIが求められる場合は将来の拡張として検討が必要（今回はクラッシュ防止を主目的とし、新規UI状態追加は過剰と判断し見送った）。
+- README「リリース署名」節に示した`signingConfigs`の追加例はドキュメント上の記載のみで、`app/build.gradle.kts`への実際の反映は行っていない（本タスクの指示が「keystoreの作成方法、build.gradle.ktsへの設定方法の概要」を求めており、実際の署名鍵作成・コミットを求めていないため）。
+
+### 次回開始位置
+- T-009完了によりdocs/tasks.mdの全タスク（T-001〜T-009）が完了する。以降は実機/エミュレータでの目視確認・実データでの検証（いずれもD-002/D-003以来の既知の制約）が利用可能になった時点で追加のdeveloper/reviewerサイクルを行うことが望ましい。
+
 ## 2026-08-20 T-008b T-008レビュー指摘の修正（MediaStoreロールバック・snapshotタイムアウト・単一点ルートのエラー文言）
 
 ### 実施内容

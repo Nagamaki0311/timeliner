@@ -303,3 +303,26 @@
 ### 影響
 - 以降、`VideoExporter`/`VideoOutput`のAPIを変更する場合も、この「失敗・キャンセル時のロールバック」「無期限待機の禁止」「内部例外をユーザー向け文言に変換する」という3方針を踏襲する。
 
+---
+
+## D-011: MapLibre SDKが自身のマニフェストで宣言する位置情報権限（ACCESS_FINE/COARSE_LOCATION）をマニフェストマージで除外する
+
+- 日付: 2026-08-20
+- 状態: 採用
+
+### 背景
+- T-009（仕上げ）で`aapt dump badging`により生成APKのマニフェストを確認したところ、本アプリの`AndroidManifest.xml`には一切記載していない`android.permission.ACCESS_FINE_LOCATION`/`ACCESS_COARSE_LOCATION`が最終マニフェストに含まれていることが判明した。原因を調査したところ、依存に含めているMapLibre Native Android SDK自身のマニフェストが、任意機能である現在地表示（LocationComponent、本アプリは未使用）向けにこれらの権限を宣言しており、Android Gradle Pluginのマニフェストマージによって本アプリのマニフェストへ自動的に統合されていた。
+- 本アプリのコード（`app/src/main`全体）には`android.location.*`・MapLibreの`LocationComponent`・`FusedLocationProvider`等の呼び出しが一切無いことをgrepで確認済み（端末の現在地を取得する機能はそもそも存在しない。インポートしたタイムラインJSON内の過去の位置情報を可視化するのみ）。
+
+### 決定
+- `AndroidManifest.xml`に`xmlns:tools`を追加し、`<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />`・同`ACCESS_COARSE_LOCATION`をマニフェストマージ除外として明示的に宣言する。
+- `ACCESS_NETWORK_STATE`/`ACCESS_WIFI_STATE`/`WAKE_LOCK`（同じくMapLibre由来、地図タイルのネットワーク取得に関連する「normal」権限でランタイム許可プロンプトを伴わない）は変更しない。
+
+### 理由
+- 本アプリは未使用の「dangerous」権限（ランタイム許可プロンプトを伴う）をAPKへ含めるべきではない。ユーザーが実際には求められていない位置情報アクセスをインストール時のパーミッション一覧やストア掲載情報で目にすることは、要件が明記する「位置情報データを端末内で完結させる」という設計意図（docs/decisions.md D-002決定4）とも整合しない不要なプライバシー面の懸念であり、AGENTS.md原則8「手を抜かない対象」のセキュリティに隣接する事項として対応した。
+- 除去は`tools:node="remove"`という標準的なマニフェストマージ機構のみで完結し、アプリの挙動（地図表示・タイル取得等）に一切影響しない（実際に`aapt dump badging`で除去後もビルド成功・地図関連の`INTERNET`等の権限は保持されることを確認済み）。
+
+### 影響
+- 将来MapLibre側のLocationComponent機能（現在地の青い点表示等）を使う要件が追加された場合、まずこの2行の削除（`tools:node="remove"`除去）とランタイム許可リクエストの実装が必要になる。
+- 実機/エミュレータでの動作確認は本開発環境では未実施のため、除去後も地図タイル取得・地図表示自体に影響が無いことは`aapt dump badging`によるマニフェスト確認・ビルド成功の確認に留まる（D-003以来の既知の制約）。
+
