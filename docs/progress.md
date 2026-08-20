@@ -42,7 +42,7 @@ D-006の決定に従い、`app/src/main/java/com/nagamaki0311/timeliner/store/Ti
 - T-006（地図上のルート表示＋期間指定）に着手する。`TimelineRepository.queryDays`/`querySegments`の出力を使って地図描画・期間指定UIを実装する想定（変更なし、T-005時点の次回開始位置を踏襲）。
 
 ### コミット
-- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット予定（Manager確認後）。
+- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット済み（コミットハッシュ`bba01cd`、コミットメッセージ先頭行: `T-005b: days上書き警告・SQLite変数上限・CancellationExceptionを修正する`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
 
 ## 2026-08-20 T-005 永続化とインポート導線
 
