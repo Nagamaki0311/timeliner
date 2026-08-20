@@ -17,6 +17,37 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-20 T-006 地図上のルート表示＋期間指定（日/週/月/年）
+
+### 実施内容
+- `app/src/main/java/com/nagamaki0311/timeliner/model/Period.kt`（純Kotlin）: `PeriodType`（DAY/WEEK/MONTH/YEAR/CUSTOM）と`Period`（`startDate`/`endDate`両端含む、`init`で`endDate < startDate`を`require`で拒否）。`Period.of(type, referenceDate)`で基準日から期間を計算（WEEKは`TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)`で月曜起点固定、MONTHは`withDayOfMonth(1)`起点、YEARは`withDayOfYear(1)`起点）。`next()`/`previous()`はDAY/WEEK/MONTH/YEARそれぞれ`plusDays`/`plusWeeks`/`plusMonths`/`plusYears`、CUSTOMは現在の期間の日数分だけ`startDate`/`endDate`双方をシフトする。`label()`が「2026年8月20日」「8月17日〜23日」（月またぎの場合は「8月31日〜9月6日」）「2026年8月」「2026年」形式の表示用文字列を返す。
+  - 保守的判断（懸念点）: 週の起点（月曜/日曜）はタスク指示に明示が無かったため、`java.time`の標準（ISO週、月曜起点）に決め打ちした。日本の一般的なカレンダーUIでは日曜起点も広く使われるため、ユーザーが日曜起点を希望する場合は`Period.of`のWEEK分岐のみを変更すればよい設計にしてある。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/PeriodSelector.kt`: 日/週/月/年の`TabRow`（`Period.of(type, period.startDate)`で種別切替）＋前後移動の`TextButton`（「前の期間」「次の期間」、アイコンフォント新規依存を避けテキストラベルにした）＋`period.label()`表示。
+- `app/src/main/java/com/nagamaki0311/timeliner/render/ScreenProjection.kt`（純Kotlin、Android API非依存）: ワールド座標（メートル、`Mercator`）→画面座標（ピクセル）の平行移動＋等方スケール変換を切り出した。`RouteOverlayView`の座標変換ロジックをJVM単体テスト可能にするための分離（タスク指示のテスト要件）。
+- `app/src/main/java/com/nagamaki0311/timeliner/render/RouteFrameRenderer.kt`: `android.graphics.Canvas`にルート線（`Path`＋`drawPath`）・現在位置マーカー（`drawCircle`）・日時テキスト・地図帰属表示（`MapConfig.ATTRIBUTION_TEXT`、新設）を描画する。`progress`（0.0〜1.0）引数を実際に処理する`trimByProgress`（先頭から切り詰め、区間途中は前後点を線形補間）を実装済みだが、T-006では常に`progress=1f`で呼ぶため実質的に全区間描画になる（T-007で活用する前提の設計）。D-003と同種の制約（`Canvas`依存でJVM単体テスト不可）としてここに明記。
+- `app/src/main/java/com/nagamaki0311/timeliner/render/RouteOverlayView.kt`: `MapLibreMap`をカメラに連動させるカスタム`View`。`attachMap(map)`で`OnCameraMoveListener`を登録し、カメラ変化（パン・ズーム）のたびに`recomputeAndInvalidate()`を呼ぶ。ズームレベルを整数へ丸めた「ズームバケット」が変化した時だけ`Simplifier.simplify`を再実行し（epsilonMeters=`metersPerPixel（Projection.getMetersPerPixelAtLatitude）× 2`）、それ以外のカメラ変化（パン・同一バケット内の微小ズーム）は`ScreenProjection`によるアフィン変換の再計算のみで済ませる（タスク指示の「再計算頻度を下げる工夫」に対応）。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`: `PeriodSelector`＋`MapContainer`（地図）＋`RouteOverlayView`（`AndroidView`でラップ）を`Column`/`Box`で重ねて配置。`TimelineViewModel.routePoints`（選択期間の点列）を`RouteOverlayView.setRoute`へ、`selectedPeriod.label()`を`setDateTimeText`へ反映する。ルートが変わるたびに全体が収まるよう`LatLngBounds.Builder`＋`CameraUpdateFactory.newLatLngBounds`で`easeCamera`する（1点のみの期間は`newLatLngZoom`で固定ズーム表示）。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineViewModel.kt`: `selectedPeriod`（`StateFlow<Period>`、初期値は当日のDAY期間）と`routePoints`（`StateFlow<PointBlobCodec.DecodedPoints?>`、期間内にデータが無ければ`null`）を追加。`selectPeriod(period)`が`repository.queryDays(start, end)`（`Dispatchers.IO`）を呼び、日付昇順（＝時刻昇順）に結合した点列を発行する。読み込み中に別の期間へ切り替わっていた場合は古い結果で上書きしない（連打対策、`_selectedPeriod.value == period`の一致確認）。ルートの結合ロジックは既存の`PointBlobCodec.DecodedPoints`（`store`パッケージに既存、新規データクラスを作らず再利用）をそのまま使う。
+- `app/src/main/java/com/nagamaki0311/timeliner/ui/MapContainer.kt`: `onMapReady: (MapLibreMap) -> Unit`引数を追加し、`RouteOverlayView`のカメラ連動に地図インスタンスを渡せるようにした。あわせて`MapConfig.ATTRIBUTION_TEXT`定数を追加。**根本原因の修正**: 地図初期化（`getMapAsync`/`setStyle`）を`AndroidView`の`update`ブロックから`factory`ブロックへ移動した。`update`は呼び出し元（`TimelineScreen`）が期間切替等で再コンポジションするたびに再実行されるため、`update`のままだと期間を切り替えるたびに地図スタイルが無駄に再読み込みされるバグになる（`factory`はAndroidViewの生成時に一度だけ呼ばれるため、この問題が起きない）。
+- `MainActivity.kt`: 地図タブの表示を`MapContainer`単体から`TimelineScreen`（`viewModel = timelineViewModel`）へ差し替え。インポートタブは変更なし。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（既存76件+新規`PeriodTest`23件+`ScreenProjectionTest`4件の計103件すべてパス）。
+- `./gradlew assembleDebug`が成功。
+- テストの制約（D-003/D-004と同種）: `RouteFrameRenderer.kt`は`android.graphics.Canvas`に、`RouteOverlayView.kt`は`android.view.View`/`org.maplibre.android.maps.MapLibreMap`にそれぞれ依存するためJVM単体テスト不可。座標変換ロジック（ワールド座標→画面座標のアフィン変換）のみ`ScreenProjection.kt`として切り出しJVM単体テストで検証した（タスク指示通り）。`MapLibreMap`の実際のAPIシグネチャ（`CameraPosition.target`が`LatLng?`でnullable等）は、Maven Centralから取得した`android-sdk-13.5.0.aar`を`javap`で逆コンパイルして確認した上で実装した（T-002と同じ手法、WebFetch不可のため）。
+- 実機/エミュレータでの目視確認（地図上へのルート描画・期間切替・fitBoundsの見た目）は本セッションでは未実施（環境制約、T-002以降一貫した既知の制約）。
+
+### 懸念点（保守的判断で進めた不明点、Auto Mode下）
+- 週の起点（月曜/日曜）: 上記「実施内容」参照。
+- `TimelineViewModel.selectedPeriod`の初期値は当日の`DAY`期間とした。インポートされるデータは通常過去の日付のため、初期表示時にルートが空（地図が初期位置のまま）になるケースが多いと想定されるが、要件に既定表示に関する明示的な指定が無く、保守的な選択として最も直感的な「今日」を既定にした。将来的に「データがある最新の期間」等を既定にしたい場合は`TimelineViewModel`の初期化ロジックの変更で対応可能。
+- `TimelineScreen.fitBounds`は選択期間の未簡略化・全点（`routePoints`、日をまたぐ場合は複数日分を結合した配列）を使って`LatLngBounds.Builder`へ`include`する。年単位等で点数が非常に多い場合、境界計算自体のコストは検討の余地があるが、期間切替時にのみ実行されるため（毎フレームではない）今回は対応を見送った（T-009の性能確認で問題があれば見直す）。
+
+### 次回開始位置
+- T-007（アニメーション再生と速度制御）に着手する。`RouteFrameRenderer.draw`の`progress`引数・`RouteOverlayView`は既に導線があるため、データ時刻↔再生時刻の写像と、`progress`を実際に変化させる再生ループの実装が中心になる想定。
+
+### コミット
+- 本タスクの変更（コード・テスト・docs/tasks.md・本エントリ含む）はコミット予定（Manager確認後）。
+
 ## 2026-08-20 T-005b T-005レビュー指摘の修正（days上書き警告・SQLite変数上限・CancellationException）
 
 ### 実施内容

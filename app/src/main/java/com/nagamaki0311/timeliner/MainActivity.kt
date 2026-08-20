@@ -19,7 +19,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import com.nagamaki0311.timeliner.ui.ImportScreen
-import com.nagamaki0311.timeliner.ui.MapContainer
+import com.nagamaki0311.timeliner.ui.TimelineScreen
 import com.nagamaki0311.timeliner.ui.TimelineViewModel
 
 class MainActivity : ComponentActivity() {
@@ -47,7 +47,7 @@ class MainActivity : ComponentActivity() {
                         }
                         Box(modifier = Modifier.weight(1f)) {
                             when (selectedTab) {
-                                0 -> MapContainer(modifier = Modifier.fillMaxSize())
+                                0 -> TimelineScreen(viewModel = timelineViewModel, modifier = Modifier.fillMaxSize())
                                 else -> ImportScreen(viewModel = timelineViewModel, modifier = Modifier.fillMaxSize())
                             }
                         }

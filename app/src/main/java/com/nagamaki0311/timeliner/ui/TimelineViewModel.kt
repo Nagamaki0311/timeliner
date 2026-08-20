@@ -6,6 +6,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.nagamaki0311.timeliner.data.ImportSource
+import com.nagamaki0311.timeliner.model.Period
+import com.nagamaki0311.timeliner.model.PeriodType
+import com.nagamaki0311.timeliner.store.PointBlobCodec
 import com.nagamaki0311.timeliner.store.TimelineDb
 import com.nagamaki0311.timeliner.store.TimelineRepository
 import kotlinx.coroutines.CancellationException
@@ -15,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.LocalDate
 
 /** [ImportScreen]が表示するインポート処理の状態。 */
 sealed interface ImportUiState {
@@ -39,6 +43,37 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
 
     private val _importState = MutableStateFlow<ImportUiState>(ImportUiState.Idle)
     val importState: StateFlow<ImportUiState> = _importState.asStateFlow()
+
+    private val _selectedPeriod = MutableStateFlow(Period.of(PeriodType.DAY, LocalDate.now()))
+    val selectedPeriod: StateFlow<Period> = _selectedPeriod.asStateFlow()
+
+    /** [selectedPeriod]に対応するルートの点列（未簡略化、[com.nagamaki0311.timeliner.render.RouteOverlayView]側で表示ズームに応じて簡略化する）。データが無い期間は`null`。 */
+    private val _routePoints = MutableStateFlow<PointBlobCodec.DecodedPoints?>(null)
+    val routePoints: StateFlow<PointBlobCodec.DecodedPoints?> = _routePoints.asStateFlow()
+
+    init {
+        viewModelScope.launch { loadRoute(_selectedPeriod.value) }
+    }
+
+    /** 期間を切り替え、対応するルートデータを読み込み直す（docs/tasks.md T-006）。 */
+    fun selectPeriod(period: Period) {
+        _selectedPeriod.value = period
+        viewModelScope.launch { loadRoute(period) }
+    }
+
+    /**
+     * [period]に対応する`days`行をリポジトリから読み出し、日付昇順（＝時刻昇順）に結合して[_routePoints]へ反映する。
+     * 読み込み中に[selectPeriod]で別の期間へ切り替わっていた場合、古い結果で上書きしない（連打対策）。
+     */
+    private suspend fun loadRoute(period: Period) {
+        val merged = withContext(Dispatchers.IO) {
+            val days = repository.queryDays(period.startDate.toString(), period.endDate.toString())
+            if (days.isEmpty()) null else mergeDayPoints(days)
+        }
+        if (_selectedPeriod.value == period) {
+            _routePoints.value = merged
+        }
+    }
 
     /** [ImportUiState.ConfirmOverwrite]表示中に保持する、書き込み未実行の準備済みインポート。 */
     private var pendingImport: TimelineRepository.PreparedImport? = null
@@ -99,6 +134,23 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     }
 
     companion object {
+        /** [TimelineRepository.DayRecord]のリスト（日付昇順）を1つの点列へ結合する。日付順＝時刻順であるため単純連結でよい。 */
+        private fun mergeDayPoints(days: List<TimelineRepository.DayRecord>): PointBlobCodec.DecodedPoints {
+            val totalCount = days.sumOf { it.points.latitudes.size }
+            val latitudes = DoubleArray(totalCount)
+            val longitudes = DoubleArray(totalCount)
+            val timestampsMillis = LongArray(totalCount)
+            var offset = 0
+            for (day in days) {
+                val count = day.points.latitudes.size
+                System.arraycopy(day.points.latitudes, 0, latitudes, offset, count)
+                System.arraycopy(day.points.longitudes, 0, longitudes, offset, count)
+                System.arraycopy(day.points.timestampsMillis, 0, timestampsMillis, offset, count)
+                offset += count
+            }
+            return PointBlobCodec.DecodedPoints(latitudes, longitudes, timestampsMillis)
+        }
+
         /** [Context]からリポジトリを組み立てるファクトリ。DIライブラリは導入しない（docs/decisions.md D-002）。 */
         fun factory(context: Context): ViewModelProvider.Factory = object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
