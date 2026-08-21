@@ -55,7 +55,7 @@ D-017参照。560日分（130万行超）の実データ再生開始時にアプ
 
 ### 次回開始位置
 - T-013（560日規模の実データ対応: 重い処理のUIスレッドからの排除、S2）に着手する。D-017参照。`Simplifier.simplify`自体は高速化したが、`RouteOverlayView.recomputeAndInvalidate`・`VideoExporter`の呼び出し元がまだUIスレッド上で同期的に実行している構造は変更していないため、T-013で非同期化（コルーチン等）に着手する想定。
-- 本タスクの変更（`Simplifier.kt`・`SimplifierTest.kt`・docs/tasks.md・docs/decisions.md（変更なし、D-017を参照するのみ）・本エントリ含む）はコミット済み（コミットハッシュは次回エントリで参照可能）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
+- 本タスクの変更（`Simplifier.kt`・`SimplifierTest.kt`・docs/tasks.md・docs/decisions.md（変更なし、D-017を参照するのみ）・本エントリ含む）はコミット済み（コミットハッシュ`ac41f7d`、コミットメッセージ先頭行: `T-012: Simplifierの計算量退化とmaxPointCount未達を修正する(S0+S1)`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
 
 ## 2026-08-21 T-011c T-011b再検証指摘の修正（JsonIOExceptionが例外型絞り込みの穴になっていた）
 
