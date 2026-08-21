@@ -220,13 +220,20 @@ class RouteOverlayView @JvmOverloads constructor(
             // （recomputeJobのキャンセルと二重の安全策、T-013タスク4）。
             if (route !== currentRoute) return@launch
 
+            // ズームバケットがA→B→Aと往復した場合（デバウンス窓内、cachedZoomBucketは計算完了後にしか
+            // 更新されないため2回目のA復帰時点で新しいscheduleSimplifyが呼ばれない）、このジョブが対象と
+            // していたzoomBucketが計算完了時点の実際のカメラのズームバケットと一致するかを再確認する
+            // （route !== currentRouteと同じ「確定直前の二重チェック」パターン、D-019決定1）。
+            val latestMap = map ?: return@launch
+            val latestTarget = latestMap.cameraPosition.target ?: return@launch
+            val latestZoomBucket = Math.round(latestMap.cameraPosition.zoom).toInt()
+            if (latestZoomBucket != zoomBucket) return@launch
+
             cachedSimplifiedWorldXs = result.worldXs
             cachedSimplifiedWorldYs = result.worldYs
             cachedSimplifiedTimestamps = result.timestamps
             cachedZoomBucket = zoomBucket
 
-            val latestMap = map ?: return@launch
-            val latestTarget = latestMap.cameraPosition.target ?: return@launch
             updateProjectionAndInvalidate(latestTarget, latestMap.projection.getMetersPerPixelAtLatitude(0.0))
         }
     }

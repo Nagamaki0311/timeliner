@@ -17,6 +17,26 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-013b T-013レビュー指摘の修正（ズームバケット往復時のキャッシュ確定条件、PlaybackControllerの並行性テスト追加）
+
+### 実施内容
+D-019の決定に従い2件を修正した。
+
+1. **`RouteOverlayView`（`app/src/main/java/com/nagamaki0311/timeliner/render/RouteOverlayView.kt`）**: `scheduleSimplify`のコミット直前（`route !== currentRoute`の二重チェックの直後）に、`map`から現在のカメラのズームバケット（`Math.round(cameraPosition.zoom)`）を再取得し、このジョブが対象としていた`zoomBucket`と一致するかを確認する処理を追加した。不一致（ズームバケットがA→B→Aとデバウンス窓内で往復し、`cachedZoomBucket`が更新されないままBを対象とした古いジョブが完了したケース）の場合はキャッシュへの書き込み・再描画をスキップして早期returnする。既存の`route !== currentRoute`と同じ「確定直前の二重チェック」パターンを踏襲した。
+2. **`PlaybackControllerTest.kt`を新設**（`app/src/test/java/com/nagamaki0311/timeliner/playback/PlaybackControllerTest.kt`）。新規依存は追加せず`kotlinx.coroutines.runBlocking`＋`launch`のみで検証する。`runBlocking`のイベントループは1スレッド内で協調的にコルーチンを実行するため、`launch`した順に各呼び出しの同期部分（`rebuildGeneration`のインクリメント、`route`/`_state`の書き換え）が必ずその順で走ることを利用し、「後から呼ばれた方が常に勝つ」ことを実時間の競合に依存せず決定的に検証できる設計にした。
+   - ケース1: `launch { setRoute(routeB) }` → `launch { setSpeedMode(Manual(60.0)) }`の順にlaunchし、最終的な`state.dataTimeMillis`/`state.speedMode`が後から呼ばれた`setSpeedMode`（`routeB`＋`Manual(60.0)`の組み合わせ）を反映することを検証。
+   - ケース2: 逆順（`launch { setSpeedMode(Auto(45000)) }` → `launch { setRoute(routeC) }`）で、最終状態が後から呼ばれた`setRoute`（`routeC`＋直前に設定された`Auto(45000)`の組み合わせ）を反映することを検証。
+   - いずれも、想定した「勝つはずの候補」と「負けるはずの候補（先着呼び出し単独の計算結果）」が実際に異なる値になることを`assertNotEquals`で確認した上で、実際の`state`が前者と一致することを`assertEquals`で確認する構成にした（コインシデンスによる見せかけの合格を防ぐ）。
+   - 実装時、テストメソッド名を日本語にしたところ`compileDebugUnitTestKotlin`が`InvalidPathException: Malformed input or input contains unmappable characters`でクラスファイル名生成に失敗した（ファイルシステム/ロケールの制約）。メソッド名はASCII（英語）にし、意図はKDocコメントで補う方式に変更して解消した。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功（新規`PlaybackControllerTest`2件、既存テストすべて含め退行なし）。`--rerun-tasks`で8回連続実行し、いずれも成功することを確認した（`runBlocking`の協調的スケジューリングに基づく設計のため、実時間の競合に依存しないはずだが念のためフレーク耐性を実測確認した）。
+- `./gradlew assembleDebug`が成功。
+
+### 次回開始位置
+- T-013・T-013bを完了とする。T-014（560日規模の実データ対応: 概観点列と詳細ウィンドウの導入、S3）に着手する。D-017参照。
+- 本タスクの変更（`RouteOverlayView.kt`・新設`PlaybackControllerTest.kt`・docs/tasks.md・docs/progress.md含む）はコミット予定（Manager確認後）。
+
 ## 2026-08-21 T-013 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2）
 
 ### 実施内容
