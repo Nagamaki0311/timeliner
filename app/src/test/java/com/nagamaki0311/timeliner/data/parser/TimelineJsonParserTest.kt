@@ -745,6 +745,64 @@ class TimelineJsonParserTest {
         assertTrue(reportedPointCounts.last() <= track.pointCount)
     }
 
+    // ---- 大規模データ（docs/decisions.md D-022決定1） ----
+
+    /**
+     * `RawTrackBuilder.isAlreadySortedAscending()`（既ソート時のコピー省略高速パス、T-016）を
+     * 130万点規模（[com.nagamaki0311.timeliner.store.TimelineRepositoryTest]の560日規模テストと
+     * 同等規模）で検証する。既存の大規模テストは`RawTrack`を直接構築し`RawTrackBuilder`を経由しない
+     * ため、この高速パスは未検証だった（レビュー指摘、docs/decisions.md D-022決定1）。
+     * 時刻昇順で生成しているため`isAlreadySortedAscending()`は`true`を返し、ソートを伴わない
+     * コピーのみの経路（本テストの主目的）を通る。クラッシュせず、点数・端点の値を保つことを確認する。
+     */
+    @Test
+    fun parseJson_largeScale1_3MillionPointsAscendingTimestamps_completesWithoutCrashAndPreservesAllPoints() {
+        val pointCount = 1_300_000
+        val json = buildLargeAscendingRecordsJson(pointCount)
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(pointCount, track.pointCount)
+        assertEquals(0, track.segments.size)
+
+        for (i in 1 until pointCount) {
+            assertTrue(
+                "timestampsMillis[$i]がtimestampsMillis[${i - 1}]未満（既ソート前提が崩れている）",
+                track.timestampsMillis[i] >= track.timestampsMillis[i - 1]
+            )
+        }
+
+        val firstPoint = track.point(0)
+        assertEquals(BASE_TIMESTAMP_MILLIS, firstPoint.timestampMillis)
+        assertEquals(35.0, firstPoint.latitude, 1e-9)
+        assertEquals(139.0, firstPoint.longitude, 1e-9)
+
+        val lastPoint = track.point(pointCount - 1)
+        assertEquals(BASE_TIMESTAMP_MILLIS + (pointCount - 1) * 1000L, lastPoint.timestampMillis)
+        val expectedLastLatitude = (350000000L + (pointCount - 1)) / 1.0e7
+        assertEquals(expectedLastLatitude, lastPoint.latitude, 1e-9)
+    }
+
+    /**
+     * [parseJson_largeScale1_3MillionPointsAscendingTimestamps_completesWithoutCrashAndPreservesAllPoints]用の
+     * 130万点規模JSON生成。文字列結合を都度行うと遅いため、[buildRecordsJson]と異なり
+     * [StringBuilder]へ直接追記する（`joinToString`も内部で`StringBuilder`を使うが、
+     * 事前に容量を確保できる分こちらの方が130万点規模ではやや効率的）。
+     */
+    private fun buildLargeAscendingRecordsJson(pointCount: Int): String {
+        val builder = StringBuilder(pointCount * 70)
+        builder.append("{\"locations\": [")
+        for (i in 0 until pointCount) {
+            if (i > 0) builder.append(",")
+            val latE7 = 350000000L + i
+            val timestamp = BASE_TIMESTAMP_MILLIS + i * 1000L
+            builder.append("{\"latitudeE7\": ").append(latE7)
+                .append(", \"longitudeE7\": 1390000000, \"timestamp\": \"").append(timestamp).append("\"}")
+        }
+        builder.append("]}")
+        return builder.toString()
+    }
+
     // ---- キャンセル（docs/decisions.md D-021決定1） ----
 
     /** `isActive`が`false`を返した場合、パースが打ち切られ`CancellationException`が送出されることを検証する。 */

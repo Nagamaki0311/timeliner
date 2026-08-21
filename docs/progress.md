@@ -17,6 +17,24 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-016b T-016レビュー指摘の修正（RawTrackBuilder高速パスの大規模未検証）
+
+### 実施内容
+D-022決定1に基づき、T-016で追加した`RawTrackBuilder.isAlreadySortedAscending()`（既ソート時のコピー省略高速パス、`TimelineJsonParser.kt`）が130万点規模で未検証だったレビュー指摘（Medium）を修正した。
+
+- `app/src/test/java/com/nagamaki0311/timeliner/data/parser/TimelineJsonParserTest.kt`に`parseJson_largeScale1_3MillionPointsAscendingTimestamps_completesWithoutCrashAndPreservesAllPoints`を新設した。`TimelineRepositoryTest.buildPreparedImport_largeScale560DayTrack_...`と同規模（130万点）の`locations`形式（Takeout Records）JSONを、時刻昇順（`timestamp = BASE + i*1000ms`）・座標を単調に変化させる（`latitudeE7 = 350000000 + i`）形で合成し、`TimelineJsonParser.parseJson`へ通した。既存の大規模テストは`RawTrack`を直接構築し`RawTrackBuilder`を経由しないため高速パスを素通りしていたが、本テストは実際に`parseJson`（＝`RawTrackBuilder`経由）を通すため、`isAlreadySortedAscending()`が`true`を返しコピーのみで完了する経路を実スケールで検証できる。
+- JSON生成は`StringBuilder`へ直接追記する専用ヘルパー`buildLargeAscendingRecordsJson`を新設した（既存の`buildRecordsJson`は`joinToString`ベースで内部的にも`StringBuilder`を使うため十分効率的だが、130万点規模で事前に容量を確保できる分やや効率的な形にした）。
+- 検証内容: クラッシュしないこと、`track.pointCount`が130万点と一致すること、全区間で`timestampsMillis`が単調非減少（既ソート前提の裏付け）であること、先頭・末尾の点の座標・時刻が期待値と一致すること。
+- D-022決定2により対応不要とされた2件（`PointBuffer.trim()`の将来的なエイリアシングリスク、`android:largeHeap`の一般的注意）には手を加えていない。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（`TimelineJsonParserTest`32件すべてパス、新設テストの実行時間は約7.1秒）。
+- `./gradlew assembleDebug`が成功した。
+- `docs/tasks.md`のT-016行の直後にT-016b行を追加し「完了」とした。
+
+### 次回開始位置
+- T-016系のレビュー対応は完了。次のタスクはdocs/tasks.mdを参照して着手する。
+
 ## 2026-08-21 補足: subagent-doc-check.pyの既知の誤検知（T-016コミット後）
 
 T-016の実施内容・結果・次回開始位置は下記エントリに記録し、コミット`c6507df`へ含めて提出済み。
