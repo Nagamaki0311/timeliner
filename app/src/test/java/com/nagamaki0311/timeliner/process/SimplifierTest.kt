@@ -148,4 +148,95 @@ class SimplifierTest {
         assertEquals(0, result.first())
         assertEquals(size - 1, result.last())
     }
+
+    // ---- 大規模データでの計算量退化・上限キャップ（T-012） ----
+
+    @Test
+    fun simplify_halfPointsProtectedByTimeGuard_completesWithinOneSecond() {
+        // 全点の50%が時間ガード保護点（1点おきに5分超のギャップ）という、保護点密度が
+        // 極端に高い10万点の入力。修正前は保護点間隔が狭いほどO(n^2/s)へ退化し、
+        // 実データ相当の間隔ではUIスレッドが数分〜数十分単位で固まっていた（docs/decisions.md D-017参照）。
+        val size = 100_000
+        val random = Random(11)
+        val latitudes = DoubleArray(size)
+        val longitudes = DoubleArray(size)
+        val timestamps = LongArray(size)
+        var lat = 35.0
+        var lon = 139.0
+        var time = 0L
+        for (i in 0 until size) {
+            lat += (random.nextDouble() - 0.5) * 0.0001
+            lon += (random.nextDouble() - 0.5) * 0.0001
+            latitudes[i] = lat
+            longitudes[i] = lon
+            // 偶数インデックスごとに5分超のギャップを挿入し、点の半分を時間ガード保護点にする。
+            time += if (i % 2 == 0) 6L * 60 * 1000 else 1000L
+            timestamps[i] = time
+        }
+
+        val startNanos = System.nanoTime()
+        val result = Simplifier.simplify(latitudes, longitudes, timestamps, epsilonMeters = 5.0)
+        val elapsedMillis = (System.nanoTime() - startNanos) / 1_000_000
+
+        assertTrue("1秒以内に完了すべきだが${elapsedMillis}msかかった", elapsedMillis < 1000)
+        assertTrue(result.isNotEmpty())
+        assertEquals(0, result.first())
+        assertEquals(size - 1, result.last())
+    }
+
+    @Test
+    fun simplify_maxPointCount_resultNeverExceedsLimit() {
+        // 保護点なし（時間ガードにかからない間隔）の入力でも、epsilon倍化後の結果が
+        // 常にmaxPointCount以下になることを確認する。
+        val size = 20_000
+        val random = Random(13)
+        val latitudes = DoubleArray(size)
+        val longitudes = DoubleArray(size)
+        val timestamps = LongArray(size)
+        var lat = 35.0
+        var lon = 139.0
+        for (i in 0 until size) {
+            lat += (random.nextDouble() - 0.5) * 0.0005
+            lon += (random.nextDouble() - 0.5) * 0.0005
+            latitudes[i] = lat
+            longitudes[i] = lon
+            timestamps[i] = i * 1000L
+        }
+
+        val result = Simplifier.simplify(
+            latitudes,
+            longitudes,
+            timestamps,
+            epsilonMeters = 0.001,
+            maxPointCount = 3000
+        )
+
+        assertTrue(result.size <= 3000)
+        assertEquals(0, result.first())
+        assertEquals(size - 1, result.last())
+    }
+
+    @Test
+    fun simplify_protectedPointsExceedMaxPointCount_stillRespectsLimit() {
+        // 時間ガード保護点だけでmaxPointCountを超える入力（1点おきに5分超のギャップ、
+        // 1万点中約1万点弱が保護点候補）。修正前はepsilon倍化では保護点を一切減らせず、
+        // 上限を守れなかった（打ち切りのみで超過したまま返っていた）。修正後は均等間引きで
+        // 保護点も対象にして必ず上限以下へ収める。
+        val size = 10_000
+        val latitudes = DoubleArray(size) { it * 0.00001 }
+        val longitudes = DoubleArray(size) { it * 0.00001 }
+        val timestamps = LongArray(size) { i -> if (i % 2 == 0) i / 2 * 6L * 60 * 1000 else (i / 2 * 6L * 60 * 1000) + 1000L }
+
+        val result = Simplifier.simplify(
+            latitudes,
+            longitudes,
+            timestamps,
+            epsilonMeters = 5.0,
+            maxPointCount = 3000
+        )
+
+        assertTrue("保護点だけで上限を超える入力でも${3000}点以下に収まるべき", result.size <= 3000)
+        assertEquals(0, result.first())
+        assertEquals(size - 1, result.last())
+    }
 }
