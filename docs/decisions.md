@@ -510,3 +510,27 @@
 - 以降、`decimateToLimit`（およびそれに類する間引き処理）を追加・変更する場合は「保護点優先」の原則を踏襲する。
 - T-013以降のフェーズは本修正の完了後に着手する。
 
+---
+
+## D-019: T-013レビュー指摘への対応方針（ズームバケット往復時のキャッシュ確定条件、PlaybackControllerの並行性テスト欠如）
+
+- 日付: 2026-08-21
+- 状態: 採用
+
+### 背景
+- T-013（重い処理のUIスレッドからの排除）のレビューで、ReviewerがMedium 2件を検出した。
+  1. `RouteOverlayView.recomputeAndInvalidate`が`zoomBucket != cachedZoomBucket`のみを再計算のトリガーにしており、`cachedZoomBucket`は計算完了後にしか更新されない。そのためズームバケットがA→B→A（デバウンス窓内で往復）と変化すると、2回目のA復帰時点で`cachedZoomBucket`がまだAのままのため新しい`scheduleSimplify`が呼ばれず、Bを対象に計算中の古いジョブがキャンセルされないまま完了し、実際のカメラはAに戻っているのにBのepsilonで計算された結果がキャッシュへ書き込まれる。
+  2. `PlaybackController`に追加した並行性制御ロジック（`rebuildGeneration`）に単体テストが一切ない。開発者はdocs/progress.mdで「`kotlinx-coroutines-test`が既存依存に無いためテストできない」と説明していたが、Reviewerが`kotlinx-coroutines-core`が既にテストクラスパスに存在すること（androidx.lifecycle経由）を実地確認し、新規依存なしで`runBlocking`ベースのテストが書けることを示した。前提自体が誤りだった。
+
+### 決定
+1. `scheduleSimplify`完了時のコミット条件（現状`route !== currentRoute`のみ）に、対象zoomBucketが依然として最新かどうかのチェックを追加する。計算完了時点で`map`から現在のズームバケットを再取得し、計算対象だったbucketと異なればキャッシュへの書き込みをスキップする（既存の`route !== currentRoute`と同じ「確定直前の二重チェック」パターンを踏襲する）。
+2. `PlaybackControllerTest.kt`を新設し、新規依存を追加せず`kotlinx.coroutines.runBlocking`上で「`setRoute`実行中に`setSpeedMode`を呼ぶ／逆順」等のケースで、最終的な`state`/`timeline`が最後に呼ばれた方の入力を反映することを検証する。
+
+### 理由
+- 1はズームバケットの往復という限定的だが実際に起こりうる操作（ピンチズームのオーバーシュート等）で発生し、実際のカメラ位置と異なる簡略化粒度が使われ続ける不整合であり、AGENTS.md原則7（根本原因を直す）に沿って対応する。
+- 2は、T-013で新規導入した唯一の複雑な並行性ロジックが、実機・エミュレータ不在という制約下で「人間の目視レビューのみ」に依存している状態であり、Reviewerが依存関係の実地確認で「テストできない」という前提自体を覆したため、対応しない理由が無くなった。
+
+### 影響
+- 以降、`RouteOverlayView`のキャッシュ確定ロジックを変更する場合は「計算完了時点の対象と現在の状態が一致するか」を再確認するパターンを踏襲する。
+- `PlaybackController`の並行性ロジックは以降テストで保護される。
+
