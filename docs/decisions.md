@@ -326,3 +326,30 @@
 - 将来MapLibre側のLocationComponent機能（現在地の青い点表示等）を使う要件が追加された場合、まずこの2行の削除（`tools:node="remove"`除去）とランタイム許可リクエストの実装が必要になる。
 - 実機/エミュレータでの動作確認は本開発環境では未実施のため、除去後も地図タイル取得・地図表示自体に影響が無いことは`aapt dump badging`によるマニフェスト確認・ビルド成功の確認に留まる（D-003以来の既知の制約）。
 
+---
+
+## D-012: edge-to-edge表示で画面端のUI要素がシステムバーに隠れる不具合への対応（システムバーごとに個別のwindowInsetsPaddingを適用）
+
+- 日付: 2026-08-21
+- 状態: 採用
+
+### 背景
+- ユーザーが実機にAPKをインストールしたところ、画面上部の「地図」「インポート」タブ・日/週/月/年の期間選択タブがステータスバー（時刻・バッテリー表示）に、画面下部の「動画として保存」ボタンがナビゲーションバー（ジェスチャーバー）にそれぞれ重なって操作不能になっている、と実機スクリーンショット付きで報告された（T-010）。
+- 原因を`MainActivity.kt`で調査したところ、T-002導入時から`enableEdgeToEdge()`が呼ばれておりウィンドウはシステムバーの背後まで描画される設定になっていたが、Composeレイアウト側（`MainActivity.kt`のルート`Column`/`TabRow`、`TimelineScreen.kt`、`ImportScreen.kt`）のいずれもシステムバー分の余白（`WindowInsets`）を確保していなかった。`app/build.gradle.kts`の`targetSdk = 36`（Android 15相当以降）自体はedge-to-edgeを強制する副次要因ではあるが、直接の原因は`enableEdgeToEdge()`導入時点でinset paddingの実装が漏れていたことにある。
+
+### 決定
+- 画面全体へ一律`Modifier.safeDrawingPadding()`を適用するのではなく、システムバーと直接隣接する要素にのみ個別に`Modifier.windowInsetsPadding(...)`を適用する。
+  1. `MainActivity.kt`: ルート`Column`直下の`TabRow`（「地図」「インポート」タブ、画面最上部）に`Modifier.windowInsetsPadding(WindowInsets.statusBars)`を適用する。
+  2. `TimelineScreen.kt`: 画面最下部の「動画として保存」`Button`に`Modifier.windowInsetsPadding(WindowInsets.navigationBars)`を適用する。
+  3. `ImportScreen.kt`: ルート`Column`（他画面と異なり上下に固定バーを持たず、単一の`Column`で完結する構成）に`Modifier.windowInsetsPadding(WindowInsets.navigationBars)`を適用する（画面上部は既にMainActivity側のTabRowの下に位置するため追加対応不要）。
+- `TimelineScreen.kt`の`PeriodSelector`（日/週/月/年タブ）・`MapContainer`（地図本体）・`PlaybackControls`には個別のinset paddingを追加しない。いずれもレイアウト上、常にMainActivity側のTabRow（ステータスバー余白確保済み）とTimelineScreen側のButton（ナビゲーションバー余白確保済み）に挟まれる位置にあり、システムバーと直接接することがないため。
+- `ExportDialog.kt`・`ImportScreen.kt`内の上書き確認`AlertDialog`は変更しない。Compose Material3の`AlertDialog`は独自の`Window`（`Dialog`）上に表示され、既定でシステムバー背後まで描画されない（`decorFitsSystemWindows`が既定のtrueのまま）ため、ホストActivity側の`enableEdgeToEdge()`の影響を受けない。
+
+### 理由
+- MainActivity.ktの`Column`構成（TabRow→Box(weight 1f)）上、地図（`MapContainer`）は常にTabRow・PeriodSelector・PlaybackControls・Buttonに囲まれた内側にあり、画面全体へ`safeDrawingPadding()`を適用した場合と、TabRow・Buttonという「システムバーに実際に隣接する要素」にのみ適用した場合とで、地図の実際の表示面積は変わらない（Columnのweight計算上、システムバー分の余白は結局TabRow側かButton側のいずれかで一度だけ消費されるため）。後者を選んだのは、タスク指示が「タブ・ボタン等の操作可能なUI要素だけがシステムバーと重ならないようにし、地図自体は必要以上に余白で狭めすぎない」という意図を明示していたため、意図がコードからも読み取れる形（余白の発生源をシステムバーに隣接する要素へ明示的に紐付ける）を優先した。
+- ImportScreenは地図のような全画面表示要素を持たない単純な`Column`構成のため、ルート`Column`へ適用すれば判定ラダー6（1行で書けるか）に合致し、過剰な粒度分割を避けられる。
+
+### 影響
+- 実機・エミュレータが無い本開発環境では、修正が実機上で正しく見た目を解消するかの目視確認はできない（D-003以来の既知の制約）。Android公式のedge-to-edge対応ドキュメント・`WindowInsets`APIの一般的な使用方法との整合性、コードレビューでの確認に留める。
+- 今後、`MainActivity.kt`のタブ構造・`TimelineScreen.kt`のレイアウト構成（PeriodSelector→地図→PlaybackControls→Button）を変更する場合、システムバーに新たに隣接することになる要素へ同様の`windowInsetsPadding`適用が必要にならないか確認すること。
+

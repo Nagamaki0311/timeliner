@@ -2,9 +2,12 @@ package com.nagamaki0311.timeliner.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -84,10 +87,15 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
             },
             onSpeedModeChange = viewModel::setSpeedMode
         )
+        // 画面最下部の操作ボタンはナビゲーションバー（ジェスチャーバー含む）と重ならないよう
+        // 自前で余白を確保する（MainActivity.ktのTabRowと同じ理由、docs/decisions.md D-012）。
         Button(
             onClick = { exportDialogVisible = true },
             enabled = map != null && route != null,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 8.dp)
         ) {
             Text("動画として保存")
         }

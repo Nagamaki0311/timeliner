@@ -17,6 +17,32 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-010 実機フィードバック対応: edge-to-edge表示でシステムUIと画面端の要素が重なる
+
+### 実施内容
+- ユーザーが実機にAPKをインストールして動作確認したところ、画面上部の「地図」「インポート」タブ・日/週/月/年の期間選択タブがステータスバーと、画面下部の「動画として保存」ボタンがナビゲーションバーとそれぞれ重なり操作不能になっている、と実機スクリーンショット付きで報告された。
+- `MainActivity.kt`・`ui/`配下を読み、原因を特定した。T-002導入時点から`enableEdgeToEdge()`が呼ばれておりウィンドウはシステムバー背後まで描画される設定になっていたが、Composeレイアウト側（`MainActivity.kt`のルート`Column`/`TabRow`、`TimelineScreen.kt`、`ImportScreen.kt`のいずれも）がシステムバー分の余白（`WindowInsets`）を一切確保していなかった。`app/build.gradle.kts`の`targetSdk = 36`はedge-to-edge強制の副次要因ではあるが、直接の原因は`enableEdgeToEdge()`導入時のinset padding実装漏れと判明した（詳細はdocs/decisions.md D-012）。
+- D-012の決定に従い、システムバーに実際に隣接する要素にのみ個別に`windowInsetsPadding`を適用した。
+  - `app/src/main/java/com/nagamaki0311/timeliner/MainActivity.kt`: 画面最上部の`TabRow`（「地図」「インポート」タブ）に`Modifier.windowInsetsPadding(WindowInsets.statusBars)`を追加。
+  - `app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`: 画面最下部の「動画として保存」`Button`に`Modifier.windowInsetsPadding(WindowInsets.navigationBars)`を追加。
+  - `app/src/main/java/com/nagamaki0311/timeliner/ui/ImportScreen.kt`: ルート`Column`に`Modifier.windowInsetsPadding(WindowInsets.navigationBars)`を追加（画面上部はMainActivity側のTabRowの下に位置するため上側の対応は不要）。
+- `TimelineScreen.kt`の`PeriodSelector`（日/週/月/年タブ）・`MapContainer`（地図本体）・`PlaybackControls`は個別の対応をしていない。いずれもMainActivity側のTabRow（ステータスバー対応済み）とTimelineScreen側のButton（ナビゲーションバー対応済み）に常に挟まれる位置にあり、Column構成上システムバーと直接接することがないため、地図表示面積への追加の影響なしにタブ・ボタンの操作可能性を確保できると判断した。
+- `ExportDialog.kt`・`ImportScreen.kt`内の上書き確認`AlertDialog`は確認のみ行い変更していない。Compose Material3の`AlertDialog`は独自の`Dialog`ウィンドウ上に表示され、既定でシステムバー背後まで描画されない（`decorFitsSystemWindows`が既定のtrueのまま）ため、ホストActivityの`enableEdgeToEdge()`設定の影響を受けないという一般的なAndroidの`Dialog`ウィンドウの仕様に基づく判断である。
+
+### 結果
+- `./gradlew testDebugUnitTest`成功。今回の変更はいずれもCompose UI（`Modifier`のみ）でAndroid API依存のためJVM単体テスト対象外（D-003と同種の制約）、新規テストは追加していない。
+- `./gradlew assembleDebug`成功。
+
+### 懸念点（保守的判断で進めた不明点、Auto Mode下）
+- 実機・エミュレータが本開発環境に無いため、修正後の見た目（タブ・ボタンがシステムバーと重ならなくなったか、地図表示面積が不自然に縮小していないか）を目視確認できていない（D-003以来一貫した既知の制約）。修正の妥当性は、Android公式のedge-to-edge対応ドキュメント・`WindowInsets` APIの一般的な使用方法との整合性、レイアウト構成上の論理的な検証（MainActivity.ktの`Column`のweight計算上、地図の表示面積はシステムバー余白の消費箇所を変えても変わらないこと）に留まる。
+- `AlertDialog`がシステムバー背後まで描画されないという判断は、Compose Material3・AndroidのDialogウィンドウの一般的な仕様に基づく調査結果であり、実機での目視確認では検証していない。
+
+### 次回開始位置
+- 特になし。T-010完了によりdocs/tasks.mdの全タスク（T-001〜T-010）が完了する。実機・エミュレータが利用可能になった時点で、本タスクの修正が実際にシステムバーとの重なりを解消しているか、地図表示面積に不自然な縮小がないかの目視確認を行うことが望ましい。
+
+### コミット
+- 本タスクの変更（コード・docs/tasks.md・docs/decisions.md・本エントリ含む）はこの後コミットする。
+
 ## 2026-08-20 Manager: v1完了判定
 
 ### 実施内容

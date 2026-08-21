@@ -7,7 +7,10 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
@@ -36,7 +39,13 @@ class MainActivity : ComponentActivity() {
                     val tabTitles = listOf("地図", "インポート")
 
                     Column(modifier = Modifier.fillMaxSize()) {
-                        TabRow(selectedTabIndex = selectedTab) {
+                        // targetSdk 36（Android 15+相当）はedge-to-edgeが強制され、ステータスバー分の余白を
+                        // 自前で確保しないとタブがステータスバーに隠れて操作不能になる（docs/decisions.md D-012）。
+                        // 地図（Box weight(1f)）はこのTabRowの下に続くため、ここにだけ余白を足せば地図は必要以上に狭まらない。
+                        TabRow(
+                            selectedTabIndex = selectedTab,
+                            modifier = Modifier.windowInsetsPadding(WindowInsets.statusBars)
+                        ) {
                             tabTitles.forEachIndexed { index, title ->
                                 Tab(
                                     selected = selectedTab == index,
