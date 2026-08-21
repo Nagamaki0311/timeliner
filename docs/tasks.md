@@ -39,7 +39,7 @@
 | T-012b | T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く） | 高 | 完了 | developer | D-018参照。decimateToLimitに保護点情報を渡し、保護点数<=maxPointCountなら保護点を全て残す方式へ修正。保護点生存率が実測約14%→100%（保護点数がmaxPointCount以下の条件下）へ改善したことをテストで確認（docs/progress.md参照） |
 | T-013 | 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2） | 高 | 完了 | developer | D-017参照。RouteOverlayViewのSimplifier呼び出しを100msデバウンス＋Dispatchers.Default化、TimelineScreen.fitBoundsをbbox計算方式へ軽量化、PlaybackController.setRoute/setSpeedMode（内部のPlaybackTimeline.buildAuto）とexportVideoのbuildAutoをDispatchers.Default化した。詳細はdocs/progress.md参照。Reviewer指摘はT-013bで対応済み（D-019参照） |
 | T-013b | T-013レビュー指摘の修正（ズームバケット往復時のキャッシュ確定条件、PlaybackControllerの並行性テスト追加） | 中 | 完了 | developer | D-019参照。RouteOverlayView.scheduleSimplifyのコミット直前に現在のズームバケットを再取得し、対象zoomBucketと不一致ならスキップするよう修正。PlaybackControllerTest.ktを新設し、runBlocking+launchのみ（新規依存なし）でsetRoute/setSpeedModeの並行呼び出しの最終状態を検証 |
-| T-014 | 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3） | 高 | 未着手 | developer | D-017参照。T-013完了後に着手 |
+| T-014 | 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3） | 高 | 完了 | developer | D-017参照。RouteOverviewを新設し日ごとに小予算DP（既定128点/日）した点列をストリーミングで結合。TimelineRepositoryにqueryDayDates/queryDateRange/queryDaysStreamingを追加。TimelineViewModel.loadRouteを短期間（7日以下）はqueryDays、長期間はRouteOverviewからの二分探索切り出しへ分岐、fitBounds用bboxもRouteOverview.boundsForDateRangeを再利用。詳細はdocs/progress.md参照 |
 | T-015 | 560日規模の実データ対応: インポート進捗表示（S4） | 高 | 未着手 | developer | D-017参照。要件「読み込み完了をユーザーが明確に確認できる」に対応 |
 | T-016 | 560日規模の実データ対応: インポート時のメモリ削減（S5） | 中 | 未着手 | developer | D-017参照 |
 | T-017 | 560日規模の実データ対応: 全期間の期間種別（S6） | 中 | 未着手 | developer | D-017参照。PeriodType.ALLの新設、D-017決定1（既定を全期間にする） |

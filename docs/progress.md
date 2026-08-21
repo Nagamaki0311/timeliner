@@ -17,6 +17,51 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-014 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3）
+
+### 実施内容
+D-017参照。期間切替のたびに選択期間の全`days`行を毎回全解像度で展開する（旧`TimelineViewModel.mergeDayPoints`の全期間一括展開）方式を、短期間は従来通り・長期間は概観点列（`RouteOverview`）からの切り出しに置き換えた。DBスキーマは変更していない。
+
+1. **`RouteOverview`を新設**（`app/src/main/java/com/nagamaki0311/timeliner/store/RouteOverview.kt`）。
+   - `RouteOverview.build(repository, pointsPerDay = OVERVIEW_POINTS_PER_DAY = 128)`が、`repository.queryDateRange()`で全体の日付範囲を取得後、`repository.queryDaysStreaming`で日付昇順に1件ずつ`DayRecord`を受け取り、日ごとに`Simplifier.simplify(epsilonMeters = 0.0, maxPointCount = pointsPerDay)`を適用して結合する。生の`DayRecord`はストリーミングコールバック内でのみ保持し（同時に1件のみ）、DP適用後の小容量チャンク（日ごとに高々128点）のみを`Builder`内のリストに蓄積、最後に1回だけ`System.arraycopy`で結合する設計にした（旧`mergeDayPoints`と同じ結合パターンをDP後の小容量データに適用）。
+   - 日ごとのbboxは元の全解像度点列（`GeoBounds.compute(day.points.latitudes, ...)`）から求める。DPで間引かれた点に緯度・経度の極値が含まれていた場合でも取りこぼさないための設計判断で（`RouteOverviewTest.buildFrom_boundsUsesFullResolutionExtremesNotSimplifiedOnes`で検証）。
+   - `breakIndices`は、日境界（常に含める）と、隣接点間の経過時間が`GAP_BREAK_MILLIS`（`CleanOptions().segmentGapMillis`＝`TrackCleaner`の既定値6時間をそのまま参照、値の重複定義を避けた）を超える箇所の両方を対象に算出・保持する（T-020のポリライン分断描画で使う想定、本タスクでは算出のみ）。
+   - `sliceRange(startMillis, endMillis)`（二分探索、O(log n)）と`boundsForDateRange(startDate, endDate)`（日別bboxの結合）を公開し、`TimelineViewModel`から利用する。
+   - DBに依存しない本体ロジック（`buildFrom(days: Iterable<DayRecord>, pointsPerDay)`）を`internal`で公開し、`TimelineRepository.buildPreparedImport`と同じパターンでJVM単体テスト可能にした。
+
+2. **`TimelineRepository`に軽量クエリを追加**（`app/src/main/java/com/nagamaki0311/timeliner/store/TimelineRepository.kt`）。
+   - `queryDayDates(): List<String>`（`date`列のみ、BLOBは読まない）。
+   - `queryDateRange(): Pair<String, String>?`（`SELECT MIN(date), MAX(date)`、データが無ければ`null`）。
+   - `queryDaysStreaming(startDate, endDate, onDay: (DayRecord) -> Unit)`を追加し、既存の`queryDays`はこれを呼んでリストへ`add`するだけの薄いラッパーへ変更した（重複実装を避けた、既存の呼び出し元・シグネチャは変更なし）。
+
+3. **`TimelineViewModel`を変更**（`app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineViewModel.kt`）。
+   - `RouteOverview`を`routeOverview`（キャッシュ）・`routeOverviewBuildJob`（進行中の構築`Deferred`、並行呼び出しが同じジョブを共有する）・`routeOverviewGeneration`（`PlaybackController.rebuildGeneration`と同じ世代カウンタパターン、`invalidateRouteOverview`呼び出し後に古い構築結果が書き戻されるのを防ぐ）で管理する`ensureRouteOverview()`/`invalidateRouteOverview()`を追加した。構築は`viewModelScope.async(Dispatchers.Default)`。
+   - インポート成功時（`commitPreparedImport`のDB書き込み成功直後）に`invalidateRouteOverview()`を呼び、次回アクセス時に再構築させる。
+   - `loadRoute`を、期間の日数（`ChronoUnit.DAYS.between`）が`SHORT_PERIOD_MAX_DAYS`（定数、既定7）以下なら従来通り`queryDays`→`mergeDayPoints`（短期間専用ヘルパーとして残した）、それを超えるなら`ensureRouteOverview()`→`RouteOverview.sliceRange`による二分探索切り出しに分岐するよう変更した。
+   - `_routeBounds`（`GeoBounds.Bounds?`のStateFlow）を新設した。短期間は`GeoBounds.compute`（従来通り、件数が少ないため軽量）、長期間は`RouteOverview.boundsForDateRange`（日別bboxの再利用、DPで間引かれた点列から再計算しない）で求める。
+   - `_isRouteLoading`（`Boolean`のStateFlow）を新設し、`loadRoute`の実行区間（概観の初回構築を含みうる）で`true`にする。
+
+4. **`TimelineScreen`を変更**（`app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`）。
+   - `fitBounds`を、`GeoBounds.compute`をUI側で呼ぶのをやめ、`TimelineViewModel.routeBounds`を受け取る形へ変更した（bbox計算の重複を排除）。
+   - `isRouteLoading`が`true`の間、地図中央に`CircularProgressIndicator`を表示するようにした（長期間初回選択時の概観構築待ちが体感できるようにするための最小限のUI、タスク指示「期間表示への組み込み」の一部と判断）。
+
+5. **単体テストを追加**（`app/src/test/java/com/nagamaki0311/timeliner/store/RouteOverviewTest.kt`、9件）。`RouteOverview.buildFrom`を`TimelineRepository`/`TimelineDb`を介さず直接呼び、以下を検証: 空入力→空概観、日境界ごとの`breakIndices`検出（日をまたぐ大きなギャップあり／小さなギャップのみでも日境界自体は検出、の両方）、日内の6時間超ギャップの検出、日ごとの出力点数が`pointsPerDay`を超えないこと（合計も`日数×pointsPerDay`以内）、bboxが元データの極値をそのまま反映すること、`sliceRange`が該当日の範囲と一致すること・範囲外では`null`、`boundsForDateRange`が指定日のみを結合すること。
+
+### 結果
+- `./gradlew testDebugUnitTest`: 成功（既存147件＋`RouteOverviewTest`新規9件＝計156件、退行なし）。
+- `./gradlew assembleDebug`（`ANDROID_HOME=/opt/android-sdk`）: 成功。
+- **560日規模のベンチマーク**（一時的なベンチマークテストを追加して実行し、記録後に削除した。T-012と同じ方針。合成データ: 560日×1日500点＝28万点、緯度経度をランダムウォークさせつつ1/20の確率で5時間ギャップを挿入）: `RouteOverview.buildFrom`が**285ms**で完了し、出力71,680点（`128点/日×560日`の上限に達している、想定通り）。
+  - メモリ見積もり（実機無しのため理論値）: 1点=緯度(8B)+経度(8B)+時刻(8B)=24バイト。入力28万点は`queryDaysStreaming`のコールバック内で1日分（最大数千点、通常運用では実測500点/日想定＝12KB程度）のみを同時保持するため、旧`mergeDayPoints`方式（選択期間の全日を`List<DayRecord>`として一括保持＋結合後の配列、全期間選択時は最大28万点×24B×2（元データ＋結合後）≈13.4MB相当が同時に存在しうる）と異なり、ピーク保持量は「直近1日分の生データ」＋「これまでの日ごとのDP後チャンク（560日×128点×24B≈1.72MB）」に抑えられる。最終結合後の配列も1.72MB程度であり、旧方式の全期間一括展開（数十万点規模）と比べて大幅に小さい。
+- **既知の制約**: 実機・エミュレータが本環境に無いため、Android実行時の実測GC負荷・フレーム落ちの確認はできない（D-017に記載済みの既知の制約と同種）。JVM単体テスト・理論値の見積もりに留まる。
+
+### 懸念点（保守的判断で進めた箇所）
+- `TimelineScreen`への`CircularProgressIndicator`表示・`fitBounds`のbbox再利用への切り替えは、タスク指示「fitBounds用のbboxは...再利用できるようにする」「期間表示への組み込みのみに専念する」の範囲内と判断し実施した。T-015（インポート進捗表示）とは別物（`isRouteLoading`はルート読み込み専用、インポート進捗は`ImportUiState`のまま変更していない）。
+- インポート成功時に`invalidateRouteOverview()`は呼ぶが、現在選択中の期間の`loadRoute`を自動的に再実行する処理は追加していない（インポート後に画面上のルートを即座に更新する挙動は元々T-014より前から無く、本タスクの指示にも明記が無いため、スコープ外と判断した）。次にユーザーが期間を切り替えた時点で新しい概観が反映される。
+- `SHORT_PERIOD_MAX_DAYS`（7）・`OVERVIEW_POINTS_PER_DAY`（128）はいずれもタスク指示の目安値をそのまま採用した（D-017決定3で128点/日は確定済み、7日は指示文の目安をそのまま採用）。
+
+### 次回開始位置
+- T-014完了。T-015（560日規模の実データ対応: インポート進捗表示、S4）に着手する。D-017参照。
+
 ## 2026-08-21 T-013b T-013レビュー指摘の修正（ズームバケット往復時のキャッシュ確定条件、PlaybackControllerの並行性テスト追加）
 
 ### 実施内容

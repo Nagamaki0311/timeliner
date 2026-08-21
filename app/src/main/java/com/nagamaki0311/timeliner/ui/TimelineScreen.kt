@@ -11,7 +11,9 @@ import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Text
+import androidx.compose.ui.Alignment
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,6 +42,8 @@ import org.maplibre.android.maps.MapLibreMap
 fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
     val period by viewModel.selectedPeriod.collectAsStateWithLifecycle()
     val route by viewModel.routePoints.collectAsStateWithLifecycle()
+    val routeBounds by viewModel.routeBounds.collectAsStateWithLifecycle()
+    val isRouteLoading by viewModel.isRouteLoading.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val exportState by viewModel.exportState.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -81,6 +85,11 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
                 },
                 modifier = Modifier.fillMaxSize()
             )
+            // 長期間（RouteOverview経由）の初回読み込みは概観点列の構築を伴い一瞬で終わらないため、
+            // 読み込み中であることが分かるよう表示する（docs/tasks.md T-014）。
+            if (isRouteLoading) {
+                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+            }
         }
         PlaybackControls(
             state = playbackState,
@@ -156,26 +165,27 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
         overlayView?.setPlaybackDataTimeMillis(playbackState.dataTimeMillis)
     }
 
-    LaunchedEffect(route, map) {
+    LaunchedEffect(route, routeBounds, map) {
         val currentMap = map
         val currentRoute = route
-        if (currentMap != null && currentRoute != null && currentRoute.latitudes.isNotEmpty()) {
-            fitBounds(currentMap, currentRoute.latitudes, currentRoute.longitudes)
+        val currentBounds = routeBounds
+        if (currentMap != null && currentRoute != null && currentBounds != null && currentRoute.latitudes.isNotEmpty()) {
+            fitBounds(currentMap, currentRoute.latitudes, currentRoute.longitudes, currentBounds)
         }
     }
 }
 
 /**
  * [latitudes]/[longitudes]全体が収まるようカメラを移動する。1点のみの場合はその点を中心に固定ズームで表示する。
- * 点数分の[LatLng]オブジェクトを生成せず、[GeoBounds.compute]で求めたbboxの対角2点のみを
- * `LatLngBounds.Builder`へ渡す（560日規模でのオブジェクト生成コスト削減、docs/tasks.md T-013）。
+ * 点数分の[LatLng]オブジェクトを生成せず、[bounds]（[TimelineViewModel.routeBounds]、[GeoBounds.compute]または
+ * [com.nagamaki0311.timeliner.store.RouteOverview.boundsForDateRange]で求めたbbox）の対角2点のみを
+ * `LatLngBounds.Builder`へ渡す（560日規模でのオブジェクト生成コスト削減、docs/tasks.md T-013・T-014）。
  */
-private fun fitBounds(map: MapLibreMap, latitudes: DoubleArray, longitudes: DoubleArray) {
+private fun fitBounds(map: MapLibreMap, latitudes: DoubleArray, longitudes: DoubleArray, bounds: GeoBounds.Bounds) {
     if (latitudes.size == 1) {
         map.easeCamera(CameraUpdateFactory.newLatLngZoom(LatLng(latitudes[0], longitudes[0]), SINGLE_POINT_ZOOM))
         return
     }
-    val bounds = GeoBounds.compute(latitudes, longitudes)
     val boundsBuilder = LatLngBounds.Builder()
         .include(LatLng(bounds.minLatitude, bounds.minLongitude))
         .include(LatLng(bounds.maxLatitude, bounds.maxLongitude))

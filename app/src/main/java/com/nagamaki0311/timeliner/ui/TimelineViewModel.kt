@@ -13,13 +13,17 @@ import com.nagamaki0311.timeliner.model.PeriodType
 import com.nagamaki0311.timeliner.playback.PlaybackController
 import com.nagamaki0311.timeliner.playback.PlaybackTimeline
 import com.nagamaki0311.timeliner.playback.SpeedMode
+import com.nagamaki0311.timeliner.process.GeoBounds
 import com.nagamaki0311.timeliner.store.PointBlobCodec
+import com.nagamaki0311.timeliner.store.RouteOverview
 import com.nagamaki0311.timeliner.store.TimelineDb
 import com.nagamaki0311.timeliner.store.TimelineRepository
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -28,6 +32,8 @@ import kotlinx.coroutines.withContext
 import org.maplibre.android.maps.MapLibreMap
 import java.io.File
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.temporal.ChronoUnit
 
 /** [ImportScreen]が表示するインポート処理の状態。 */
 sealed interface ImportUiState {
@@ -65,9 +71,33 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private val _selectedPeriod = MutableStateFlow(Period.of(PeriodType.DAY, LocalDate.now()))
     val selectedPeriod: StateFlow<Period> = _selectedPeriod.asStateFlow()
 
-    /** [selectedPeriod]に対応するルートの点列（未簡略化、[com.nagamaki0311.timeliner.render.RouteOverlayView]側で表示ズームに応じて簡略化する）。データが無い期間は`null`。 */
+    /**
+     * [selectedPeriod]に対応するルートの点列。短期間（[SHORT_PERIOD_MAX_DAYS]日以下）は`days`行から
+     * 全解像度で取得し、長期間は[RouteOverview]（日ごとに小予算でDPした概観点列）から該当区間を
+     * 切り出す（docs/tasks.md T-014・docs/decisions.md D-017）。いずれも[com.nagamaki0311.timeliner.render.RouteOverlayView]側で
+     * 表示ズームに応じてさらに簡略化する想定。データが無い期間は`null`。
+     */
     private val _routePoints = MutableStateFlow<PointBlobCodec.DecodedPoints?>(null)
     val routePoints: StateFlow<PointBlobCodec.DecodedPoints?> = _routePoints.asStateFlow()
+
+    /** [selectedPeriod]に対応するbbox。[fitBounds]用（docs/tasks.md T-014）。データが無い期間は`null`。 */
+    private val _routeBounds = MutableStateFlow<GeoBounds.Bounds?>(null)
+    val routeBounds: StateFlow<GeoBounds.Bounds?> = _routeBounds.asStateFlow()
+
+    private val _isRouteLoading = MutableStateFlow(false)
+    /** 選択期間のルート読み込み中（[RouteOverview]の初回構築を含みうる）にtrueになる（docs/tasks.md T-014）。 */
+    val isRouteLoading: StateFlow<Boolean> = _isRouteLoading.asStateFlow()
+
+    /**
+     * [RouteOverview]のキャッシュ。初回アクセス時に[Dispatchers.Default]上で1度だけ構築し、
+     * インポート成功時（[commitPreparedImport]）に無効化して再構築させる（docs/tasks.md T-014）。
+     * [routeOverviewGeneration]は、構築中に[invalidateRouteOverview]が呼ばれた場合に、
+     * 完了した古い構築結果を[routeOverview]へ書き戻さないようにするための世代カウンタ
+     * （[PlaybackController]の`rebuildGeneration`と同じパターン、docs/decisions.md D-019）。
+     */
+    private var routeOverview: RouteOverview? = null
+    private var routeOverviewBuildJob: Deferred<RouteOverview>? = null
+    private var routeOverviewGeneration = 0L
 
     /**
      * アニメーション再生の状態管理（docs/tasks.md T-007）。[selectedPeriod]のルートデータが変わるたびに
@@ -181,16 +211,31 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     }
 
     /**
-     * [period]に対応する`days`行をリポジトリから読み出し、日付昇順（＝時刻昇順）に結合して[_routePoints]へ反映する。
-     * 読み込み中に[selectPeriod]で別の期間へ切り替わっていた場合、古い結果で上書きしない（連打対策）。
+     * [period]に対応するルートを読み出し[_routePoints]・[_routeBounds]へ反映する。読み込み中に
+     * [selectPeriod]で別の期間へ切り替わっていた場合、古い結果で上書きしない（連打対策）。
      * DB破損等（[PointBlobCodec.decode]の`require`失敗や`android.database.sqlite.SQLiteException`）で
      * 読み込みに失敗した場合、クラッシュさせずその期間はデータ無し（`null`）として扱う（docs/tasks.md T-009）。
+     *
+     * 期間が[SHORT_PERIOD_MAX_DAYS]日以下なら`days`行から全解像度で取得し（従来通り）、
+     * それより長い期間は[RouteOverview]（日ごとに小予算でDPした概観点列、初回アクセス時に構築しキャッシュする）
+     * から該当区間を二分探索で切り出す。これにより、大きな期間を選択するたびに全解像度データを
+     * 毎回展開する（旧`mergeDayPoints`の全期間一括展開）コストを避ける（docs/tasks.md T-014・docs/decisions.md D-017）。
      */
     private suspend fun loadRoute(period: Period) {
-        val merged = try {
-            withContext(Dispatchers.IO) {
-                val days = repository.queryDays(period.startDate.toString(), period.endDate.toString())
-                if (days.isEmpty()) null else mergeDayPoints(days)
+        _isRouteLoading.value = true
+        val loaded = try {
+            val spanDays = ChronoUnit.DAYS.between(period.startDate, period.endDate) + 1
+            if (spanDays <= SHORT_PERIOD_MAX_DAYS) {
+                withContext(Dispatchers.IO) {
+                    val days = repository.queryDays(period.startDate.toString(), period.endDate.toString())
+                    if (days.isEmpty()) null else {
+                        val merged = mergeDayPoints(days)
+                        merged to GeoBounds.compute(merged.latitudes, merged.longitudes)
+                    }
+                }
+            } else {
+                val overview = ensureRouteOverview()
+                withContext(Dispatchers.Default) { sliceOverview(overview, period) }
             }
         } catch (e: CancellationException) {
             throw e
@@ -199,13 +244,62 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
             null
         }
         if (_selectedPeriod.value == period) {
-            _routePoints.value = merged
-            if (merged == null) {
+            _routePoints.value = loaded?.first
+            _routeBounds.value = loaded?.second
+            if (loaded == null) {
                 playbackController.setRoute(DoubleArray(0), DoubleArray(0), LongArray(0))
             } else {
+                val merged = loaded.first
                 playbackController.setRoute(merged.latitudes, merged.longitudes, merged.timestampsMillis)
             }
+            _isRouteLoading.value = false
         }
+    }
+
+    /**
+     * [period]に対応する区間を[overview]から二分探索で切り出す（概観自体は共有し、切り出し結果のみ新規配列にする）。
+     * bboxは[RouteOverview.boundsForDateRange]（日ごとの全解像度bboxの結合）を再利用し、DPで間引かれた
+     * 点列から再計算しない（間引きで失われた極値を取りこぼさないため、[GeoBounds.compute]より正確）。
+     */
+    private fun sliceOverview(overview: RouteOverview, period: Period): Pair<PointBlobCodec.DecodedPoints, GeoBounds.Bounds>? {
+        val startMillis = period.startDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+        val endMillis = period.endDate.plusDays(1).atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli() - 1
+        val range = overview.sliceRange(startMillis, endMillis) ?: return null
+        val sliced = PointBlobCodec.DecodedPoints(
+            overview.latitudes.copyOfRange(range.first, range.last + 1),
+            overview.longitudes.copyOfRange(range.first, range.last + 1),
+            overview.timestampsMillis.copyOfRange(range.first, range.last + 1)
+        )
+        // 通常はrangeが非nullならこの期間に含まれるdaysも存在するはずだが、念のためのフォールバック
+        // （データ不整合等でboundsForDateRangeがnullを返す場合、切り出し済み点列から計算し直す）。
+        val bounds = overview.boundsForDateRange(period.startDate.toString(), period.endDate.toString())
+            ?: GeoBounds.compute(sliced.latitudes, sliced.longitudes)
+        return sliced to bounds
+    }
+
+    /**
+     * [routeOverview]を返す。未構築なら[Dispatchers.Default]上で1度だけ構築してキャッシュする
+     * （並行呼び出しは同じ構築[Job]を共有する）。
+     */
+    private suspend fun ensureRouteOverview(): RouteOverview {
+        routeOverview?.let { return it }
+        val myGeneration = routeOverviewGeneration
+        val job = routeOverviewBuildJob ?: viewModelScope.async(Dispatchers.Default) {
+            RouteOverview.build(repository)
+        }.also { routeOverviewBuildJob = it }
+        val result = job.await()
+        if (myGeneration == routeOverviewGeneration) {
+            routeOverview = result
+            routeOverviewBuildJob = null
+        }
+        return result
+    }
+
+    /** インポート成功時に[routeOverview]キャッシュを無効化し、次回アクセス時に再構築させる。 */
+    private fun invalidateRouteOverview() {
+        routeOverviewGeneration++
+        routeOverview = null
+        routeOverviewBuildJob = null
     }
 
     /** [ImportUiState.ConfirmOverwrite]表示中に保持する、書き込み未実行の準備済みインポート。 */
@@ -258,6 +352,8 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private suspend fun commitPreparedImport(prepared: TimelineRepository.PreparedImport) {
         try {
             val result = withContext(Dispatchers.IO) { repository.commitImport(prepared) }
+            // 新しいdays行が追加された可能性があるため、次回アクセス時にRouteOverviewを再構築させる（docs/tasks.md T-014）。
+            invalidateRouteOverview()
             _importState.value = ImportUiState.Success(result)
         } catch (e: CancellationException) {
             throw e
@@ -269,7 +365,17 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     companion object {
         private const val TAG = "TimelineViewModel"
 
-        /** [TimelineRepository.DayRecord]のリスト（日付昇順）を1つの点列へ結合する。日付順＝時刻順であるため単純連結でよい。 */
+        /**
+         * この日数以下の期間は`days`行から全解像度で読み出し、これを超える期間は[RouteOverview]から
+         * 切り出す（[loadRoute]、docs/tasks.md T-014）。将来調整可能なよう定数として公開する。
+         */
+        private const val SHORT_PERIOD_MAX_DAYS = 7
+
+        /**
+         * [TimelineRepository.DayRecord]のリスト（日付昇順）を1つの点列へ結合する。日付順＝時刻順であるため単純連結でよい。
+         * 短期間（[SHORT_PERIOD_MAX_DAYS]日以下）の`queryDays`結果専用のヘルパー
+         * （長期間は[RouteOverview]からの切り出しに置き換えたため、ここでは全期間一括展開はしない）。
+         */
         private fun mergeDayPoints(days: List<TimelineRepository.DayRecord>): PointBlobCodec.DecodedPoints {
             val totalCount = days.sumOf { it.points.latitudes.size }
             val latitudes = DoubleArray(totalCount)
