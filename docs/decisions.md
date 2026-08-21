@@ -534,3 +534,32 @@
 - 以降、`RouteOverlayView`のキャッシュ確定ロジックを変更する場合は「計算完了時点の対象と現在の状態が一致するか」を再確認するパターンを踏襲する。
 - `PlaybackController`の並行性ロジックは以降テストで保護される。
 
+---
+
+## D-020: T-014レビュー指摘への対応方針（RouteOverviewキャッシュの並行性テスト欠如、無効化時の未キャンセルJob、未使用メソッド）
+
+- 日付: 2026-08-21
+- 状態: 採用
+
+### 背景
+- T-014（概観点列RouteOverviewの導入）のレビューで、ReviewerがHigh 1件・Medium 1件・Low 2件を検出した。
+  1. （High/CONFIRMED）`TimelineViewModel.ensureRouteOverview`/`invalidateRouteOverview`（`routeOverviewGeneration`による世代ガード）は`PlaybackController.rebuildGeneration`と同種の並行性ロジックだが、単体テストが一切ない。D-019でまさに同じ形の指摘（`PlaybackController`の並行性テスト欠如）に対応した直後の再発であり、`TimelineViewModelTest.kt`はリポジトリに1つも存在しない。
+  2. （Medium/CONFIRMED）`invalidateRouteOverview`は`routeOverviewBuildJob`の参照を`null`にするだけで、実行中の`Deferred`（`RouteOverview.build(repository)`、全`days`テーブル走査＋日ごとのDP）自体をキャンセルしない。世代ガードにより結果が誤ってキャッシュされることはないが、560日規模の重い処理がインポート完了後も無駄に完走し、`commitImport`の書き込みトランザクションとSQLite接続を奪い合う。
+  3. （Low/CONFIRMED）新設した`TimelineRepository.queryDayDates()`が呼び出し元皆無（未使用）。
+  4. （Low/PLAUSIBLE）`_routePoints`/`_routeBounds`が別々の`StateFlow`への逐次代入のため、理論上`LaunchedEffect`が新旧混在の組み合わせで一瞬発火しうる（自己修正見込み、データ破損なし）。
+
+### 決定
+1. 上記1・2・3を修正する（T-014b）。
+   - `ensureRouteOverview`が`RouteOverview.build(repository)`をハードコード呼び出しせず、差し替え可能な関数として保持するようにし、`TimelineViewModelTest.kt`を新設して「構築中に`invalidateRouteOverview`が呼ばれても古い結果がキャッシュへ書き戻されない」「並行呼び出しが同じJobを共有する」ことを`runBlocking`+`launch`（`PlaybackControllerTest.kt`と同じ手法、新規依存不要）で検証する。
+   - `invalidateRouteOverview()`内で`routeOverviewBuildJob?.cancel()`を呼んでから`null`化する。
+   - 未使用の`queryDayDates()`を削除する（YAGNI、AGENTS.md判定ラダー1）。
+2. 4は実害が無く（次のリコンポジションで自己修正される）、確実な再現手順も無いPLAUSIBLE判定のため、今回は対応せずdocs/tasks.mdのバックログへ記録するに留める。
+
+### 理由
+- 1・2・3はAGENTS.md原則7（バグは根本原因を直す）・原則8（手を抜かない対象）に照らし、実機・エミュレータ不在という制約下で並行性ロジックを人間の目視レビューのみに委ねる状態を放置すべきではないと判断した。特にHigh指摘はD-019と全く同じ構造の再発であり、放置すると同種の並行性ロジックを追加するたびに同じ指摘を繰り返すことになる。
+- 4は構造的な改善余地（`_routePoints`/`_routeBounds`を単一`StateFlow`にまとめる）はあるものの、影響が軽微かつ確証が無いため、REVIEW.mdの過剰指摘抑制方針に従いバックログ止まりとする。
+
+### 影響
+- 以降、`ViewModel`層に世代ガード等の並行性ロジックを追加する場合、DB/リポジトリ依存を注入可能にしてテスト可能な形で実装するパターンを踏襲する。
+- キャッシュ無効化処理は、参照を外すだけでなく実行中の`Job`/`Deferred`を明示的にキャンセルするパターンを踏襲する。
+
