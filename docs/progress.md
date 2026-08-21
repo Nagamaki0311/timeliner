@@ -17,6 +17,36 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-013 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2）
+
+### 実施内容
+D-017参照。T-012/T-012bでSimplifierの計算量退化自体は解消済みだが、560日規模では`Simplifier.simplify`実行自体に数十〜数百ms程度かかりうるため、これがUIスレッド上で実行される3箇所を非同期化した。
+
+1. **`RouteOverlayView`（`app/src/main/java/com/nagamaki0311/timeliner/render/RouteOverlayView.kt`）**: `OnCameraMoveListener`コールバックからの`Simplifier.simplify`呼び出しを非同期化した。
+   - Viewに`recomputeJob: Job?`と、`findViewTreeLifecycleOwner()?.lifecycleScope`優先・取得不可時は自前の`CoroutineScope(SupervisorJob() + Dispatchers.Default)`（`ownScope`）にフォールバックする`viewScope()`を追加した。`onDetachedFromWindow`で両方をキャンセルする。
+   - `recomputeAndInvalidate`を「ズームバケット変化時のみ`scheduleSimplify`（デバウンス＋非同期）を起動」「常に軽量な`updateProjectionAndInvalidate`（既存キャッシュを使った画面座標変換のみ、同期のまま）を実行」の2つに分離した。パン操作等バケット非変化時は従来どおり同期で滑らかに追従する。
+   - `scheduleSimplify`は`launch(Dispatchers.Main.immediate)`で起動し、`delay(100ms)`でデバウンスしてから`withContext(Dispatchers.Default)`で`Simplifier.simplify`を実行する。新しい要求が来るたびに`recomputeJob?.cancel()`で直前のジョブを止める（デバウンス）。計算完了後は`ensureActive()`と`route !== currentRoute`の参照比較（ジョブキャンセルに対する二重の安全策）で、計算中にルートが切り替わっていた場合に古い結果でキャッシュを上書きしないようにした（タスク指示4）。計算完了までは直前の簡略化結果（初回は空、T-012以前の状態相当）で描画を継続する。
+   - `setRoute`は呼び出し時点で`recomputeJob?.cancel()`する（ルート自体が空になるケースなど、`scheduleSimplify`が呼ばれない経路でも確実にキャンセルするため）。
+
+2. **`TimelineScreen.fitBounds`（`app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`）**: 点数分の`LatLng`オブジェクトを`LatLngBounds.Builder.include`へ投入する方式をやめ、新設した純Kotlinの`GeoBounds.compute`（`app/src/main/java/com/nagamaki0311/timeliner/process/GeoBounds.kt`）でmin/max走査のみでbboxを求め、対角2点のみを`LatLngBounds.Builder`へ渡す方式に変更した。`GeoBounds`は`ScreenProjection`/`Mercator`と同じく`android.*`に依存しない設計とし、JVM単体テスト（`GeoBoundsTest.kt`、5件: 単一点、複数点、負の座標、空配列での例外、配列長不一致での例外）を追加した。
+
+3. **`PlaybackController.setRoute`/`setSpeedMode`（`app/src/main/java/com/nagamaki0311/timeliner/playback/PlaybackController.kt`）**: 内部で呼ぶ`rebuildTimeline`（`PlaybackTimeline.buildAuto`/`buildManual`を呼ぶ）が常にMainスレッドで実行されていたのを、共有関数`rebuildTimeline`自体を`suspend`化し`withContext(Dispatchers.Default)`で計算するよう修正した（AGENTS.md原則7「共有関数側を一度だけ直す」に従い、`setRoute`だけでなく同じ`rebuildTimeline`を呼ぶ`setSpeedMode`も併せて修正）。これに伴い両メソッドが`suspend fun`になったため、`TimelineViewModel.setSpeedMode`は`viewModelScope.launch`でラップするよう変更した（`TimelineViewModel.loadRoute`は元々`suspend fun`のため変更不要）。
+   - タスク指示4（古いジョブが新しい状態を上書きしない）への対応として、`rebuildTimeline`に`rebuildGeneration`（呼び出しごとに増分するLong）を追加した。`setRoute`/`setSpeedMode`は`withContext`の中断点を挟んで交錯しうる（前者の計算中に後者が呼ばれ`route`/`_state.value.speedMode`を書き換えるケース）ため、`rebuildTimeline`呼び出しごとに自分の世代番号を記録し、計算完了時点で最新世代と一致するかを確認する明示的なチェックを設けた（`myGeneration != rebuildGeneration`なら`timeline`を上書きせず終了する）。
+   - ついでに`TimelineViewModel.exportVideo`内の`PlaybackTimeline.buildAuto`呼び出し（同じ関数を別経路で呼んでおりMain実行のままだった）も`withContext(Dispatchers.Default)`で囲んだ。T-013の指示文には明記されていないが、AGENTS.md原則7「全呼び出し元を確認し、共有関数側を一度だけ直す」に従い、同一の重い共有関数の呼び出し元を横断的に確認した結果として対応した（動画書き出し開始時のMainブロッキングも同じ根本原因のため）。
+
+### 結果
+- `./gradlew testDebugUnitTest`: 成功（既存テスト＋`GeoBoundsTest`新規5件、計測なし・退行なし）。
+- `./gradlew assembleDebug`（`ANDROID_HOME=/opt/android-sdk`）: 成功。
+- 実機・エミュレータが本開発環境に無いため、フレームレート等の実測はできない（D-017に記載済みの既知の制約）。コードレビューでの確認事項として: `RouteOverlayView.scheduleSimplify`内の`Simplifier.simplify`呼び出しが`withContext(Dispatchers.Default)`ブロック内にあること、`recomputeAndInvalidate`の同期経路（`updateProjectionAndInvalidate`）が`Simplifier`を一切呼ばずキャッシュ済み配列のみを使うこと、`PlaybackController.rebuildTimeline`内の`PlaybackTimeline.buildAuto`/`buildManual`呼び出しが`withContext(Dispatchers.Default)`ブロック内にあることを、いずれもソースコード上のスコープで確認した。
+
+### 懸念点（保守的判断で進めた箇所）
+- タスク指示は`PlaybackController.setRoute`の非同期化のみを明示していたが、同じ`rebuildTimeline`を呼ぶ`setSpeedMode`、および同じ`PlaybackTimeline.buildAuto`を別経路で呼ぶ`exportVideo`も併せて修正した（根本原因が共有関数にあるため、AGENTS.md原則7を優先）。ユーザーへの追加確認は行わず、Auto Mode方針に従い保守的に「同じ問題を全呼び出し元で解消する」方向で判断した。
+- `RouteOverlayView`のデバウンスは`kotlinx-coroutines-test`が既存プロジェクトの依存に無いため、タスク指示どおりコードレビューで確認可能な設計（`recomputeAndInvalidate`/`scheduleSimplify`/`updateProjectionAndInvalidate`の責務分離、ジョブキャンセル・世代チェックの明示化）にとどめ、新規依存の追加は行わなかった。
+
+### 次回開始位置
+- T-014（560日規模の実データ対応: 概観点列と詳細ウィンドウの導入、S3）に着手する。D-017参照。
+- 本タスクの変更（`RouteOverlayView.kt`・`TimelineScreen.kt`・`TimelineViewModel.kt`・`PlaybackController.kt`・新設`GeoBounds.kt`/`GeoBoundsTest.kt`・docs/tasks.md・本エントリ含む）はコミット前。Manager確認後にコミットして問題ない。
+
 ## 2026-08-21 T-012b T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く）
 
 ### 実施内容

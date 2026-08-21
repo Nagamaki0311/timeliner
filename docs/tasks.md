@@ -37,7 +37,7 @@
 | T-011c | T-011b再検証指摘の修正（JsonIOExceptionが例外型絞り込みの穴になっていた） | 高 | 完了 | developer | D-016参照。catch (JsonSyntaxException)をcatch (JsonParseException)へ変更する1行修正。非EOF系IOExceptionがJsonIOExceptionへラップされ2件目要素消費中に発生するケースの回復テストを追加 |
 | T-012 | 560日規模の実データ対応: 計測基盤とSimplifierのANR根治（S0+S1） | 高 | 完了 | developer | D-017参照。時間ガード保護点をDP本体から分離し区切り点として扱う方式へ変更、maxPointCountをdecimateToLimitでハードキャップ化。ベンチマークで28万点・maxPointCount=3000が600秒超未完了→105msへ改善したことを確認（docs/progress.md参照）。Reviewer指摘はT-012bで修正済み（D-018参照） |
 | T-012b | T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く） | 高 | 完了 | developer | D-018参照。decimateToLimitに保護点情報を渡し、保護点数<=maxPointCountなら保護点を全て残す方式へ修正。保護点生存率が実測約14%→100%（保護点数がmaxPointCount以下の条件下）へ改善したことをテストで確認（docs/progress.md参照） |
-| T-013 | 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2） | 高 | 未着手 | developer | D-017参照。T-012完了後に着手 |
+| T-013 | 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2） | 高 | 完了 | developer | D-017参照。RouteOverlayViewのSimplifier呼び出しを100msデバウンス＋Dispatchers.Default化、TimelineScreen.fitBoundsをbbox計算方式へ軽量化、PlaybackController.setRoute/setSpeedMode（内部のPlaybackTimeline.buildAuto）とexportVideoのbuildAutoをDispatchers.Default化した。詳細はdocs/progress.md参照 |
 | T-014 | 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3） | 高 | 未着手 | developer | D-017参照。T-013完了後に着手 |
 | T-015 | 560日規模の実データ対応: インポート進捗表示（S4） | 高 | 未着手 | developer | D-017参照。要件「読み込み完了をユーザーが明確に確認できる」に対応 |
 | T-016 | 560日規模の実データ対応: インポート時のメモリ削減（S5） | 中 | 未着手 | developer | D-017参照 |

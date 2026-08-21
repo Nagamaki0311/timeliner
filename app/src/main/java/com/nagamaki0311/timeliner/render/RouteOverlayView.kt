@@ -4,8 +4,20 @@ import android.content.Context
 import android.graphics.Canvas
 import android.util.AttributeSet
 import android.view.View
+import androidx.lifecycle.findViewTreeLifecycleOwner
+import androidx.lifecycle.lifecycleScope
 import com.nagamaki0311.timeliner.process.Mercator
 import com.nagamaki0311.timeliner.process.Simplifier
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.maps.MapLibreMap
 
 /**
@@ -16,6 +28,11 @@ import org.maplibre.android.maps.MapLibreMap
  * 簡略化（[Simplifier]）のepsilonは表示ズームから決まる「画面上2px相当のメートル数」を使う。
  * ズームレベルを整数へ丸めたバケットが変化した時だけDouglas-Peuckerを再実行し（毎フレーム再計算しない）、
  * それ以外のカメラ変化（パン・同一ズームバケット内の微小ズーム）は変換の再計算のみで済ませる。
+ *
+ * [Simplifier.simplify]自体は560日規模（数十万点）では数十〜数百ms程度かかりうるため、
+ * `OnCameraMoveListener`コールバック（UIスレッド）から直接呼ばず、[SIMPLIFY_DEBOUNCE_MILLIS]でデバウンスした上で
+ * [Dispatchers.Default]上で実行する（docs/tasks.md T-013）。計算完了までは直前の簡略化結果（未計算時は空）で
+ * 描画を継続し、完了時に[cachedZoomBucket]等のキャッシュを更新して再描画する。
  */
 class RouteOverlayView @JvmOverloads constructor(
     context: Context,
@@ -40,10 +57,22 @@ class RouteOverlayView @JvmOverloads constructor(
     private var cachedSimplifiedTimestamps = LongArray(0)
     private var screenCoordinates = FloatArray(0)
 
+    /** [scheduleSimplify]で起動した進行中のジョブ。新しい要求が来たらキャンセルする（デバウンス、T-013）。 */
+    private var recomputeJob: Job? = null
+
+    /**
+     * [findViewTreeLifecycleOwner]の`lifecycleScope`が使えない場合（Viewがまだツリーに接続されていない等）の
+     * フォールバック。[onDetachedFromWindow]でキャンセルする。
+     */
+    private var ownScope: CoroutineScope? = null
+
     private val cameraMoveListener = MapLibreMap.OnCameraMoveListener { recomputeAndInvalidate() }
 
     /** 表示するルートの点列（未簡略化、[com.nagamaki0311.timeliner.process.TrackCleaner]適用済み）。 */
     private data class Route(val latitudes: DoubleArray, val longitudes: DoubleArray, val timestampsMillis: LongArray)
+
+    /** [Simplifier.simplify]完了後の結果一式（ワールド座標＋時刻）。 */
+    private data class SimplifiedResult(val worldXs: DoubleArray, val worldYs: DoubleArray, val timestamps: LongArray)
 
     /** カメラに連動させる[MapLibreMap]を設定する。呼び出し元（[com.nagamaki0311.timeliner.ui.TimelineScreen]）が地図準備完了後に呼ぶ。 */
     fun attachMap(map: MapLibreMap) {
@@ -55,6 +84,8 @@ class RouteOverlayView @JvmOverloads constructor(
 
     /** 表示するルートの点列を設定する（時刻昇順、[com.nagamaki0311.timeliner.store.PointBlobCodec.DecodedPoints]相当）。 */
     fun setRoute(latitudes: DoubleArray, longitudes: DoubleArray, timestampsMillis: LongArray) {
+        // 進行中の簡略化ジョブは古いルートに対するものなので、結果が出ても新しい状態を上書きしないようキャンセルする（T-013）。
+        recomputeJob?.cancel()
         route = if (latitudes.isEmpty()) null else Route(latitudes, longitudes, timestampsMillis)
         cachedZoomBucket = Int.MIN_VALUE // ルートが変わったら簡略化を強制的に再実行する
         recomputeAndInvalidate()
@@ -82,6 +113,10 @@ class RouteOverlayView @JvmOverloads constructor(
 
     override fun onDetachedFromWindow() {
         map?.removeOnCameraMoveListener(cameraMoveListener)
+        recomputeJob?.cancel()
+        recomputeJob = null
+        ownScope?.cancel()
+        ownScope = null
         super.onDetachedFromWindow()
     }
 
@@ -105,6 +140,11 @@ class RouteOverlayView @JvmOverloads constructor(
         return RouteFrameRenderer.progressAtDataTime(cachedSimplifiedTimestamps, dataTime)
     }
 
+    /**
+     * カメラ・ルート・サイズの変化を受けて再描画する。ズームバケットが変わった場合のみ
+     * [scheduleSimplify]で簡略化を（デバウンス後、非同期に）再実行し、それ以外は既存の
+     * [cachedSimplifiedWorldXs]/[cachedSimplifiedWorldYs]を使った画面座標変換のみを行う（軽量、同期のまま）。
+     */
     private fun recomputeAndInvalidate() {
         val currentRoute = route
         val currentMap = map
@@ -127,20 +167,13 @@ class RouteOverlayView @JvmOverloads constructor(
         val metersPerPixel = currentMap.projection.getMetersPerPixelAtLatitude(0.0)
         val zoomBucket = Math.round(cameraPosition.zoom).toInt()
         if (zoomBucket != cachedZoomBucket) {
-            val epsilonMeters = (metersPerPixel * SIMPLIFY_EPSILON_SCREEN_PIXELS).coerceAtLeast(MIN_EPSILON_METERS)
-            val keptIndices = Simplifier.simplify(
-                currentRoute.latitudes,
-                currentRoute.longitudes,
-                currentRoute.timestampsMillis,
-                epsilonMeters,
-                maxPointCount = SIMPLIFY_MAX_POINT_COUNT
-            )
-            cachedSimplifiedWorldXs = DoubleArray(keptIndices.size) { Mercator.longitudeToX(currentRoute.longitudes[keptIndices[it]]) }
-            cachedSimplifiedWorldYs = DoubleArray(keptIndices.size) { Mercator.latitudeToY(currentRoute.latitudes[keptIndices[it]]) }
-            cachedSimplifiedTimestamps = LongArray(keptIndices.size) { currentRoute.timestampsMillis[keptIndices[it]] }
-            cachedZoomBucket = zoomBucket
+            scheduleSimplify(currentRoute, zoomBucket, metersPerPixel)
         }
+        updateProjectionAndInvalidate(target, metersPerPixel)
+    }
 
+    /** [cachedSimplifiedWorldXs]/[cachedSimplifiedWorldYs]から画面座標を計算し再描画する（軽量、O(n)だがオブジェクト生成なし）。 */
+    private fun updateProjectionAndInvalidate(target: LatLng, metersPerPixel: Double) {
         val centerWorldX = Mercator.longitudeToX(target.longitude)
         val centerWorldY = Mercator.latitudeToY(target.latitude)
         screenCoordinates = ScreenProjection.toScreenCoordinates(
@@ -155,6 +188,59 @@ class RouteOverlayView @JvmOverloads constructor(
         invalidate()
     }
 
+    /**
+     * [SIMPLIFY_DEBOUNCE_MILLIS]待ってから[Simplifier.simplify]を[Dispatchers.Default]上で実行し、
+     * 完了したら[cachedSimplifiedWorldXs]等を更新して再描画する（T-013）。連続したカメラ移動で
+     * 呼ばれるたびに[recomputeJob]を差し替える（＝進行中のジョブをキャンセルする）ことでデバウンスする。
+     */
+    private fun scheduleSimplify(currentRoute: Route, zoomBucket: Int, metersPerPixel: Double) {
+        recomputeJob?.cancel()
+        recomputeJob = viewScope().launch(Dispatchers.Main.immediate) {
+            delay(SIMPLIFY_DEBOUNCE_MILLIS)
+            ensureActive()
+
+            val epsilonMeters = (metersPerPixel * SIMPLIFY_EPSILON_SCREEN_PIXELS).coerceAtLeast(MIN_EPSILON_METERS)
+            val result = withContext(Dispatchers.Default) {
+                val keptIndices = Simplifier.simplify(
+                    currentRoute.latitudes,
+                    currentRoute.longitudes,
+                    currentRoute.timestampsMillis,
+                    epsilonMeters,
+                    maxPointCount = SIMPLIFY_MAX_POINT_COUNT
+                )
+                SimplifiedResult(
+                    worldXs = DoubleArray(keptIndices.size) { Mercator.longitudeToX(currentRoute.longitudes[keptIndices[it]]) },
+                    worldYs = DoubleArray(keptIndices.size) { Mercator.latitudeToY(currentRoute.latitudes[keptIndices[it]]) },
+                    timestamps = LongArray(keptIndices.size) { currentRoute.timestampsMillis[keptIndices[it]] }
+                )
+            }
+            ensureActive()
+
+            // 計算完了までの間にsetRouteで別のルートへ切り替わっていた場合、古い結果で新しい状態を上書きしない
+            // （recomputeJobのキャンセルと二重の安全策、T-013タスク4）。
+            if (route !== currentRoute) return@launch
+
+            cachedSimplifiedWorldXs = result.worldXs
+            cachedSimplifiedWorldYs = result.worldYs
+            cachedSimplifiedTimestamps = result.timestamps
+            cachedZoomBucket = zoomBucket
+
+            val latestMap = map ?: return@launch
+            val latestTarget = latestMap.cameraPosition.target ?: return@launch
+            updateProjectionAndInvalidate(latestTarget, latestMap.projection.getMetersPerPixelAtLatitude(0.0))
+        }
+    }
+
+    /**
+     * ジョブ起動に使う[CoroutineScope]を返す。[findViewTreeLifecycleOwner]が取得できればその`lifecycleScope`
+     * （Viewの生存期間に連動して自動キャンセルされる）を優先し、取得できない場合は自前のスコープへフォールバックする
+     * （[onDetachedFromWindow]で明示的にキャンセルする）。
+     */
+    private fun viewScope(): CoroutineScope =
+        findViewTreeLifecycleOwner()?.lifecycleScope
+            ?: ownScope
+            ?: CoroutineScope(SupervisorJob() + Dispatchers.Default).also { ownScope = it }
+
     companion object {
         /** 簡略化epsilonに使う「画面上何ピクセル相当か」（docs/tasks.md T-006決定4）。 */
         private const val SIMPLIFY_EPSILON_SCREEN_PIXELS = 2.0
@@ -164,9 +250,15 @@ class RouteOverlayView @JvmOverloads constructor(
 
         /**
          * Douglas-Peucker簡略化後に残す点数の上限（画面幅ピクセル数のオーダー、D-007決定2）。
-         * UIスレッド（`OnCameraMoveListener`コールバック）上での同期実行を、未簡略化の期間全体点列
-         * （数万〜十万点規模）に対してではなく、この上限を超えない範囲に抑えるための安全弁。
+         * [Dispatchers.Default]上での実行対象を、未簡略化の期間全体点列（数万〜十万点規模）に対してではなく、
+         * この上限を超えない範囲に抑えるための安全弁。
          */
         private const val SIMPLIFY_MAX_POINT_COUNT = 3000
+
+        /**
+         * `OnCameraMoveListener`からの再計算要求のデバウンス間隔（ミリ秒、T-013）。
+         * 連続したズーム操作のたびに[Simplifier.simplify]を都度実行しないよう、この間隔だけ待ってから実行する。
+         */
+        private const val SIMPLIFY_DEBOUNCE_MILLIS = 100L
     }
 }

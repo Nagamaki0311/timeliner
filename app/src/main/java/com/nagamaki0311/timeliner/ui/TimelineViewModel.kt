@@ -94,7 +94,11 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     fun play() = playbackController.play()
     fun pause() = playbackController.pause()
     fun seekTo(progress: Float) = playbackController.seekTo(progress)
-    fun setSpeedMode(mode: SpeedMode) = playbackController.setSpeedMode(mode)
+
+    /** [PlaybackController.setSpeedMode]は[PlaybackTimeline.buildAuto]等をMainスレッド外で実行するためsuspend化されている（T-013）。 */
+    fun setSpeedMode(mode: SpeedMode) {
+        viewModelScope.launch { playbackController.setSpeedMode(mode) }
+    }
 
     /**
      * 選択期間のルートを、目標再生時間[targetDurationMillis]（[SpeedMode.AUTO_DURATION_OPTIONS_MILLIS]から選択、
@@ -125,9 +129,13 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
             // （docs/decisions.md D-010決定1）。
             var mediaStoreUri: Uri? = null
             try {
-                val timeline = PlaybackTimeline.buildAuto(
-                    route.timestampsMillis, route.latitudes, route.longitudes, targetDurationMillis
-                )
+                // buildAutoは560日規模（数十万点）では軽くないため、他のplaybackController経由の呼び出し
+                // （T-013）と同様にMainスレッド外で実行する。
+                val timeline = withContext(Dispatchers.Default) {
+                    PlaybackTimeline.buildAuto(
+                        route.timestampsMillis, route.latitudes, route.longitudes, targetDurationMillis
+                    )
+                }
                 VideoExporter(appContext).export(
                     map = map,
                     latitudes = route.latitudes,

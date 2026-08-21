@@ -1,6 +1,7 @@
 package com.nagamaki0311.timeliner.playback
 
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -9,6 +10,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -66,34 +68,52 @@ class PlaybackController(private val scope: CoroutineScope) {
     private var elapsedPlaybackMillis = 0L
     private var playbackJob: Job? = null
 
-    /** 表示するルートの点列を設定する（時刻昇順）。既存の再生は停止し、進捗を先頭へ戻して[timeline]を再構築する。 */
-    fun setRoute(latitudes: DoubleArray, longitudes: DoubleArray, timestampsMillis: LongArray) {
+    /**
+     * [rebuildTimeline]の呼び出し世代。呼び出しごとに増分し、[Dispatchers.Default]上での計算完了時に
+     * 最新世代と一致するかを確認することで、古い呼び出しの結果が新しい呼び出しの結果を上書きしないようにする
+     * （T-013タスク4、`setRoute`/`setSpeedMode`が[withContext]の中断点を挟んで交錯しうるため）。
+     */
+    private var rebuildGeneration = 0L
+
+    /**
+     * 表示するルートの点列を設定する（時刻昇順）。既存の再生は停止し、進捗を先頭へ戻して[timeline]を再構築する。
+     * [PlaybackTimeline.buildAuto]は560日規模（数十万点）では軽くないため、[Dispatchers.Default]上で実行する
+     * （T-013）。
+     */
+    suspend fun setRoute(latitudes: DoubleArray, longitudes: DoubleArray, timestampsMillis: LongArray) {
         pause()
         route = if (timestampsMillis.isEmpty()) null else RouteData(latitudes, longitudes, timestampsMillis)
         elapsedPlaybackMillis = 0L
         rebuildTimeline()
     }
 
-    /** 速度モードを切り替える。既存の再生は停止し、進捗を先頭へ戻して[timeline]を再構築する。 */
-    fun setSpeedMode(mode: SpeedMode) {
+    /** 速度モードを切り替える。既存の再生は停止し、進捗を先頭へ戻して[timeline]を再構築する（T-013、[setRoute]と同様の理由で非同期化）。 */
+    suspend fun setSpeedMode(mode: SpeedMode) {
         pause()
         elapsedPlaybackMillis = 0L
         _state.update { it.copy(speedMode = mode) }
         rebuildTimeline()
     }
 
-    private fun rebuildTimeline() {
+    private suspend fun rebuildTimeline() {
+        val myGeneration = ++rebuildGeneration
         val currentRoute = route
-        timeline = if (currentRoute == null) {
+        val mode = _state.value.speedMode
+        val newTimeline = if (currentRoute == null) {
             null
         } else {
-            when (val mode = _state.value.speedMode) {
-                is SpeedMode.Auto -> PlaybackTimeline.buildAuto(
-                    currentRoute.timestampsMillis, currentRoute.latitudes, currentRoute.longitudes, mode.targetDurationMillis
-                )
-                is SpeedMode.Manual -> PlaybackTimeline.buildManual(currentRoute.timestampsMillis, mode.speedMultiplier)
+            withContext(Dispatchers.Default) {
+                when (mode) {
+                    is SpeedMode.Auto -> PlaybackTimeline.buildAuto(
+                        currentRoute.timestampsMillis, currentRoute.latitudes, currentRoute.longitudes, mode.targetDurationMillis
+                    )
+                    is SpeedMode.Manual -> PlaybackTimeline.buildManual(currentRoute.timestampsMillis, mode.speedMultiplier)
+                }
             }
         }
+        // withContext中に別のsetRoute/setSpeedMode呼び出しが後から開始・完了していたら、古い結果で上書きしない。
+        if (myGeneration != rebuildGeneration) return
+        timeline = newTimeline
         publishState()
     }
 

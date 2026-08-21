@@ -25,6 +25,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nagamaki0311.timeliner.export.VideoOutput
 import com.nagamaki0311.timeliner.playback.PlaybackTimeFormat
+import com.nagamaki0311.timeliner.process.GeoBounds
 import com.nagamaki0311.timeliner.render.RouteOverlayView
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
@@ -164,16 +165,20 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
     }
 }
 
-/** [latitudes]/[longitudes]全体が収まるようカメラを移動する。1点のみの場合はその点を中心に固定ズームで表示する。 */
+/**
+ * [latitudes]/[longitudes]全体が収まるようカメラを移動する。1点のみの場合はその点を中心に固定ズームで表示する。
+ * 点数分の[LatLng]オブジェクトを生成せず、[GeoBounds.compute]で求めたbboxの対角2点のみを
+ * `LatLngBounds.Builder`へ渡す（560日規模でのオブジェクト生成コスト削減、docs/tasks.md T-013）。
+ */
 private fun fitBounds(map: MapLibreMap, latitudes: DoubleArray, longitudes: DoubleArray) {
     if (latitudes.size == 1) {
         map.easeCamera(CameraUpdateFactory.newLatLngZoom(LatLng(latitudes[0], longitudes[0]), SINGLE_POINT_ZOOM))
         return
     }
+    val bounds = GeoBounds.compute(latitudes, longitudes)
     val boundsBuilder = LatLngBounds.Builder()
-    for (i in latitudes.indices) {
-        boundsBuilder.include(LatLng(latitudes[i], longitudes[i]))
-    }
+        .include(LatLng(bounds.minLatitude, bounds.minLongitude))
+        .include(LatLng(bounds.maxLatitude, bounds.maxLongitude))
     map.easeCamera(CameraUpdateFactory.newLatLngBounds(boundsBuilder.build(), FIT_BOUNDS_PADDING_PX))
 }
 
