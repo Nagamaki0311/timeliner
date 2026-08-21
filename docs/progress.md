@@ -45,7 +45,7 @@ D-017参照。T-012/T-012bでSimplifierの計算量退化自体は解消済み�
 
 ### 次回開始位置
 - T-014（560日規模の実データ対応: 概観点列と詳細ウィンドウの導入、S3）に着手する。D-017参照。
-- 本タスクの変更（`RouteOverlayView.kt`・`TimelineScreen.kt`・`TimelineViewModel.kt`・`PlaybackController.kt`・新設`GeoBounds.kt`/`GeoBoundsTest.kt`・docs/tasks.md・本エントリ含む）はコミット前。Manager確認後にコミットして問題ない。
+- 本タスクの変更（`RouteOverlayView.kt`・`TimelineScreen.kt`・`TimelineViewModel.kt`・`PlaybackController.kt`・新設`GeoBounds.kt`/`GeoBoundsTest.kt`・docs/tasks.md・本エントリ含む）はコミット済み（コミットハッシュ`79f2923`、コミットメッセージ先頭行: `T-013: 重い処理をUIスレッドから排除する(D-017)`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
 
 ## 2026-08-21 T-012b T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く）
 
