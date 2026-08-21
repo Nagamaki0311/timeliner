@@ -17,6 +17,30 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-017 560日規模の実データ対応: 全期間の期間種別（S6）
+
+### 実施内容
+D-017決定1（既定期間・既定動画スコープを全期間にする）・決定2（全期間選択時は手動固定倍率モードを無効化する）に基づき、`PeriodType.ALL`を新設し全期間表示・選択を実装した。
+
+- `Period.kt`: `PeriodType`に`ALL`を追加。基準日単独から範囲を計算できないため、既存の`Period.of(type, referenceDate)`は`ALL`に対して`UnsupportedOperationException`を投げるようにし、代わりに専用ファクトリ`Period.ofAll(earliestDate, latestDate)`を新設した。`shift()`は`ALL`に対して自身を返す（「次/前」の概念が無いため無効操作）。`label()`は「全期間（2024年1月1日〜2025年8月13日）」形式（DAYと同じ日付フォーマットを再利用する`dateLabel`ヘルパーを追加）。
+- `TimelineViewModel.kt`: `init`ブロックで`repository.queryDateRange()`を非同期に呼び、データがあれば`Period.ofAll(...)`、無ければ従来通り今日の`DAY`へフォールバックしてから`loadRoute`する（起動時デフォルトをALLにする、決定1）。同じ解決ロジックを`resolveAllPeriod()`へ切り出し、`PeriodSelector`の「全期間」タブから呼ばれる新設の`selectAllPeriod()`でも再利用する。手動モード無効化（決定2）は`isManualModeAllowed(periodType): Boolean`という純粋関数（`TimelineViewModel`のcompanion object、DB非依存でJVM単体テスト可能）に切り出し、`setSpeedMode`が`ALL`選択中の`Manual`要求を無視する防御と、`selectPeriod`/`selectAllPeriod`後に現在の速度モードが`Manual`のままなら`SpeedMode.DEFAULT`（自動）へ強制切り替えする`enforceSpeedModeConstraint`の両方から使う。
+- `PeriodSelector.kt`: タブに「全期間」を追加。既存の`onPeriodChange: (Period) -> Unit`は同期的に`Period.of`を呼ぶ設計のため、`ALL`はDBクエリを要する非同期処理として別コールバック`onSelectAll: () -> Unit`を新設し、タブのonClickで型に応じて呼び分けた。「前の期間」「次の期間」ボタンは`ALL`選択時は無効化（`shift`が無効操作のため）。
+- `PlaybackControls.kt`: `periodType: PeriodType`を新規引数として受け取り、`TimelineViewModel.isManualModeAllowed(periodType)`の結果を`SpeedModeRow`へ渡して「手動」ボタンをdisabled化し、無効時は「全期間では自動モードのみ選択できます」という注記を表示する。`ModeChoiceButton`に`enabled`パラメータを追加。
+- `TimelineScreen.kt`: 上記2つのコンポーザブルの呼び出し箇所を新シグネチャに合わせて配線した（`onSelectAll = viewModel::selectAllPeriod`、`periodType = period.type`）。
+- 動画書き出し（決定1後半「既定動画スコープも全期間」）について、`TimelineViewModel.exportVideo`は元々常に`_routePoints.value`（＝現在選択中の期間）を書き出す設計であり、`ExportDialog`にスコープ選択UIは無いことを確認した。起動時デフォルトをALLにすれば書き出しも自然に全期間が既定になるため、`ExportDialog`側の変更は不要と判断した（タスク指示の想定通り）。
+
+設計判断（複数の妥当な選択肢があった箇所）:
+- `isManualModeAllowed`の配置先は、`TimelineViewModel`本体がJVM単体テストからインスタンス化できない制約（D-020と同じ）を踏まえ、`RouteOverviewCache`のような独立クラスに切り出す案と、`TimelineViewModel`のcompanion object（インスタンス化不要で呼べる）に置く案を検討した。本関数はインスタンス状態を一切持たない1行の純粋関数のため、専用クラスを新設するほどの複雑さは無いと判断し、既存の`mergeDayPoints`等と同様にcompanion objectへ追加した（AGENTS.md原則5「ファイルは増やさない」）。
+- `_selectedPeriod`の初期値は同期的な`MutableStateFlow`のため、起動直後（DBクエリ解決前）は一時的に今日の`DAY`のままになる（`isRouteLoading`はT-014から流用しルート読み込み中の表示に使っているが、`PeriodSelector`のタブ/ラベル自体は解決完了まで「日」表示のまま）。解決後に`ALL`へ即座に差し替わるため実害は小さく、`selectedPeriod`をnullable化する等の設計変更は本タスクの範囲外と判断し見送った。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（`PeriodTest`27件・新設`TimelineViewModelCompanionTest`2件を含む全173件パス、失敗0）。
+- `./gradlew assembleDebug`が成功した。
+- `PeriodSelector`/`PlaybackControls`の呼び出し元は`TimelineScreen.kt`の1箇所のみであることをgrepで確認し、シグネチャ変更に伴う配線漏れが無いことを確認した。
+
+### 次回開始位置
+- 次はdocs/tasks.mdのT-018（再生時間選択肢の変更、S7）。
+
 ## 2026-08-21 T-016b T-016レビュー指摘の修正（RawTrackBuilder高速パスの大規模未検証）
 
 ### 実施内容

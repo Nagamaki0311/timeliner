@@ -66,6 +66,7 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
         PeriodSelector(
             period = period,
             onPeriodChange = viewModel::selectPeriod,
+            onSelectAll = viewModel::selectAllPeriod,
             modifier = Modifier.windowInsetsPadding(horizontalNavBarInsets)
         )
         Box(modifier = Modifier.fillMaxSize().weight(1f)) {
@@ -93,6 +94,7 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
         }
         PlaybackControls(
             state = playbackState,
+            periodType = period.type,
             onPlayPause = { if (playbackState.isPlaying) viewModel.pause() else viewModel.play() },
             onSeek = { progress ->
                 if (!isSeeking) {

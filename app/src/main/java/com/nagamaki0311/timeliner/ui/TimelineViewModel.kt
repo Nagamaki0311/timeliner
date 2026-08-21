@@ -126,23 +126,69 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     val exportState: StateFlow<ExportUiState> = _exportState.asStateFlow()
     private var exportJob: Job? = null
 
+    /**
+     * アプリ起動時のオンスクリーン初期表示期間は全期間（[PeriodType.ALL]）とする（docs/decisions.md D-017決定1）。
+     * DBに実在する最古日〜最新日は[TimelineRepository.queryDateRange]で非同期に解決する必要があるため、
+     * [_selectedPeriod]の初期値はいったん暫定（今日の[PeriodType.DAY]、データ未取込の初回起動時と同じフォールバック）
+     * にし、解決でき次第[PeriodType.ALL]へ差し替える（[resolveAllPeriod]）。
+     */
     init {
-        viewModelScope.launch { loadRoute(_selectedPeriod.value) }
+        viewModelScope.launch {
+            val period = resolveAllPeriod()
+            _selectedPeriod.value = period
+            loadRoute(period)
+        }
     }
 
     /** 期間を切り替え、対応するルートデータを読み込み直す（docs/tasks.md T-006）。 */
     fun selectPeriod(period: Period) {
         _selectedPeriod.value = period
         viewModelScope.launch { loadRoute(period) }
+        enforceSpeedModeConstraint(period.type)
+    }
+
+    /**
+     * 全期間（[PeriodType.ALL]）を選択する（docs/tasks.md T-017）。日付範囲はDBクエリで非同期に解決する必要があるため、
+     * 同期的に完結する[selectPeriod]とは別経路にしている（[PeriodSelector]の`onSelectAll`から呼ばれる）。
+     */
+    fun selectAllPeriod() {
+        viewModelScope.launch {
+            val period = resolveAllPeriod()
+            _selectedPeriod.value = period
+            loadRoute(period)
+            enforceSpeedModeConstraint(period.type)
+        }
+    }
+
+    /**
+     * [repository.queryDateRange]からDBに実在する最古日〜最新日を読み取り[Period.ofAll]を返す。
+     * データが1件も無い場合（初回起動・未インポート）は今日の[PeriodType.DAY]へフォールバックする。
+     */
+    private suspend fun resolveAllPeriod(): Period {
+        val range = withContext(Dispatchers.IO) { repository.queryDateRange() }
+        return range?.let { (earliest, latest) -> Period.ofAll(LocalDate.parse(earliest), LocalDate.parse(latest)) }
+            ?: Period.of(PeriodType.DAY, LocalDate.now())
     }
 
     fun play() = playbackController.play()
     fun pause() = playbackController.pause()
     fun seekTo(progress: Float) = playbackController.seekTo(progress)
 
-    /** [PlaybackController.setSpeedMode]は[PlaybackTimeline.buildAuto]等をMainスレッド外で実行するためsuspend化されている（T-013）。 */
+    /**
+     * [PlaybackController.setSpeedMode]は[PlaybackTimeline.buildAuto]等をMainスレッド外で実行するためsuspend化されている（T-013）。
+     * 全期間（[PeriodType.ALL]）選択中に手動固定倍率モードへの切り替えが要求された場合は無視する（docs/decisions.md D-017決定2）。
+     * UI（[PlaybackControls]）が手動ボタンを無効化していれば通常到達しないが、防御的にここでも判定する。
+     */
     fun setSpeedMode(mode: SpeedMode) {
+        if (mode is SpeedMode.Manual && !isManualModeAllowed(_selectedPeriod.value.type)) return
         viewModelScope.launch { playbackController.setSpeedMode(mode) }
+    }
+
+    /** [period]切り替え後、その期間種別で手動モードが許可されないのに現在の速度モードが手動なら自動モードへ強制切り替えする。 */
+    private fun enforceSpeedModeConstraint(periodType: PeriodType) {
+        if (!isManualModeAllowed(periodType) && playbackController.state.value.speedMode is SpeedMode.Manual) {
+            setSpeedMode(SpeedMode.DEFAULT)
+        }
     }
 
     /**
@@ -391,6 +437,15 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
 
     companion object {
         private const val TAG = "TimelineViewModel"
+
+        /**
+         * [periodType]で手動固定倍率モード（[SpeedMode.Manual]）を選択可能かを返す（docs/decisions.md D-017決定2）。
+         * 全期間（[PeriodType.ALL]）選択時は無効（自動モードのみ）。DB等に依存しない純粋関数として切り出し、
+         * [TimelineViewModel]自体をインスタンス化できないJVM単体テストからも呼べるようにしている
+         * （[TimelineViewModel]は`ViewModel`基底クラス・`TimelineRepository`のAndroid API依存でインスタンス化不可、
+         * docs/decisions.md D-020と同じ制約）。
+         */
+        fun isManualModeAllowed(periodType: PeriodType): Boolean = periodType != PeriodType.ALL
 
         /**
          * この日数以下の期間は`days`行から全解像度で読み出し、これを超える期間は[RouteOverview]から

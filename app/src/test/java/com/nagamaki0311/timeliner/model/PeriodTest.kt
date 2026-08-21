@@ -193,4 +193,37 @@ class PeriodTest {
 
         assertEquals("2026年", period.label())
     }
+
+    @Test
+    fun ofAll_setsStartAndEndDateFromArguments() {
+        val period = Period.ofAll(LocalDate.of(2024, 1, 1), LocalDate.of(2025, 8, 13))
+
+        assertEquals(PeriodType.ALL, period.type)
+        assertEquals(LocalDate.of(2024, 1, 1), period.startDate)
+        assertEquals(LocalDate.of(2025, 8, 13), period.endDate)
+    }
+
+    @Test
+    fun of_all_throwsUnsupportedOperationException() {
+        // ALLは基準日単独からは計算できないため、Period.ofAllを使う必要がある（docs/tasks.md T-017）。
+        assertThrows(UnsupportedOperationException::class.java) {
+            Period.of(PeriodType.ALL, LocalDate.of(2026, 8, 20))
+        }
+    }
+
+    @Test
+    fun all_nextAndPrevious_returnSameInstance() {
+        // 全期間に「次/前」の概念は無いため、変化なし＝自身を返す（docs/tasks.md T-017）。
+        val period = Period.ofAll(LocalDate.of(2024, 1, 1), LocalDate.of(2025, 8, 13))
+
+        assertEquals(period, period.next())
+        assertEquals(period, period.previous())
+    }
+
+    @Test
+    fun label_all_formatsAsRangeWithPrefix() {
+        val period = Period.ofAll(LocalDate.of(2024, 1, 1), LocalDate.of(2025, 8, 13))
+
+        assertEquals("全期間（2024年1月1日〜2025年8月13日）", period.label())
+    }
 }

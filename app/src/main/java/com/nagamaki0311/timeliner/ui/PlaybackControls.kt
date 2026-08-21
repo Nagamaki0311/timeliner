@@ -16,6 +16,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.nagamaki0311.timeliner.model.PeriodType
 import com.nagamaki0311.timeliner.playback.PlaybackController
 import com.nagamaki0311.timeliner.playback.PlaybackTimeFormat
 import com.nagamaki0311.timeliner.playback.SpeedMode
@@ -27,10 +28,14 @@ import com.nagamaki0311.timeliner.playback.SpeedMode
  * [com.nagamaki0311.timeliner.store.TimelineRepository]に保持されているが、[TimelineViewModel.routePoints]は
  * 点列のみを扱い区間ごとのセグメント紐付けを持たないため、追加の突合ロジックが必要になる。
  * タスク指示「無ければ省略してよい」に従い、既知の制約としてここに記録し今回は実装しない）。
+ *
+ * [periodType]が[PeriodType.ALL]（全期間）の場合、手動固定倍率モードを無効化し自動モードのみ選択可能にする
+ * （docs/decisions.md D-017決定2）。判定は[TimelineViewModel.isManualModeAllowed]に委譲する。
  */
 @Composable
 fun PlaybackControls(
     state: PlaybackController.State,
+    periodType: PeriodType,
     onPlayPause: () -> Unit,
     onSeek: (Float) -> Unit,
     onSeekFinished: () -> Unit,
@@ -59,12 +64,16 @@ fun PlaybackControls(
                 .fillMaxWidth()
                 .semantics { contentDescription = "再生位置" }
         )
-        SpeedModeRow(speedMode = state.speedMode, onSpeedModeChange = onSpeedModeChange)
+        SpeedModeRow(
+            speedMode = state.speedMode,
+            manualModeAllowed = TimelineViewModel.isManualModeAllowed(periodType),
+            onSpeedModeChange = onSpeedModeChange
+        )
     }
 }
 
 @Composable
-private fun SpeedModeRow(speedMode: SpeedMode, onSpeedModeChange: (SpeedMode) -> Unit) {
+private fun SpeedModeRow(speedMode: SpeedMode, manualModeAllowed: Boolean, onSpeedModeChange: (SpeedMode) -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -82,11 +91,19 @@ private fun SpeedModeRow(speedMode: SpeedMode, onSpeedModeChange: (SpeedMode) ->
         ModeChoiceButton(
             label = "手動",
             selected = speedMode is SpeedMode.Manual,
+            enabled = manualModeAllowed,
             onClick = {
                 val multiplier = (speedMode as? SpeedMode.Manual)?.speedMultiplier
                     ?: SpeedMode.MANUAL_SPEED_MULTIPLIER_OPTIONS[0]
                 onSpeedModeChange(SpeedMode.Manual(multiplier))
             }
+        )
+    }
+    if (!manualModeAllowed) {
+        Text(
+            text = "全期間では自動モードのみ選択できます",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
     }
     when (speedMode) {
@@ -118,8 +135,8 @@ private fun SpeedModeRow(speedMode: SpeedMode, onSpeedModeChange: (SpeedMode) ->
 }
 
 @Composable
-private fun ModeChoiceButton(label: String, selected: Boolean, onClick: () -> Unit) {
-    TextButton(onClick = onClick) {
+private fun ModeChoiceButton(label: String, selected: Boolean, onClick: () -> Unit, enabled: Boolean = true) {
+    TextButton(onClick = onClick, enabled = enabled) {
         Text(
             text = label,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
