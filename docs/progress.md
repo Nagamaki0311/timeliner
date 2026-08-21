@@ -17,6 +17,25 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-015b T-015レビュー指摘の修正（confirmOverwrite後の進捗リセット、インポートのキャンセル不能、初回発火の早期化）
+
+### 実施内容
+D-021決定1に従い、T-015（コミット`3d012bd`）レビューのMedium2件・Low2件を修正した（Nit1件はD-021決定2により対応せず）。
+
+1. **Medium: `confirmOverwrite()`の進捗リセット**: `ImportUiState.InProgress`に`writing: Boolean = false`を追加。`confirmOverwrite()`は`InProgress()`（既定値）へリセットする代わりに、`pendingImport`（`TimelineRepository.PreparedImport`、`prepareImport`確定済みの正確な`pointCount`と`dayGroups`の日付範囲）から`pointCount`/`earliestDate`/`latestDate`を引き継ぎ`writing = true`で表示を継続する。`ImportScreen.kt`は`writing`に応じて「読み込み中…」/「書き込み中…」の文言を出し分ける。
+2. **Medium: インポートがキャンセル不能**: `TimelineJsonParser.parseJson`/`parseZip`に`isActive: () -> Boolean = { true }`を追加し、内部`RawTrackBuilder`へ橋渡し。`maybeReportProgress`の間引きタイミング（点数3000件増加または150ms経過ごと、`onProgress`と同じ頻度）で`isActive()`を確認し、`false`なら`kotlinx.coroutines.CancellationException`を送出してパースを打ち切る。`ImportSource.readRawTrack`にも同名引数を追加し橋渡し。`TimelineViewModel.importFrom`は`withContext(Dispatchers.IO) { ... }`のコルーチンスコープの`isActive`（`kotlinx.coroutines.isActive`拡張プロパティ）を`{ isActive }`として渡し、`viewModelScope`がキャンセルされれば（画面破棄等）パースも打ち切られるようにした。
+   - 実装中に別の実バグを発見: `parseArrayElementSafely`が要素単位のパース失敗を握りつぶすために`catch (e: RuntimeException)`という広い型で捕捉しており、`CancellationException`も`RuntimeException`のサブクラスのため誤って握りつぶされ、キャンセルが伝播しない状態だった（`isActive`テストの`AssertionError`で発覚）。`catch (e: CancellationException) { throw e }`を`RuntimeException`より先に置き、握りつぶさず再送出するよう修正した。
+3. **Low: 初回発火の早期化**: `RawTrackBuilder.lastProgressTimeMillis`の型を`Long`（初期値`0L`）から`Long?`（初期値`null`）へ変更。`maybeReportProgress`は`null`の間は基準時刻を確立するだけに留め、`onProgress`呼び出しも`isActive`チェックも行わない。これにより初回`addPoint`（`pointCount=1`）時点での意図しない早期発火を防いだ。
+4. **Low: `parseZip`側の`onProgress`テスト欠如**: `TimelineJsonParserTest.kt`に`parseZip_multipleEntries_onProgressAccumulatesPointCountAcrossEntries`（2エントリ×5,000点、`pointCount`が単調増加しエントリをまたいで累積されること＝2エントリ目の通知が1エントリ分の点数を超えることを検証）を追加。あわせて`isActive`関連のテスト2件（キャンセルで`CancellationException`が送出されること、省略時は従来通り最後まで正常にパースできること）、`lastProgressTimeMillis`修正の回帰テスト1件（1点のみのデータでは`onProgress`が一度も呼ばれないこと）を追加した。
+
+### 結果
+- `./gradlew testDebugUnitTest --rerun-tasks`が成功（全165件パス、`TimelineJsonParserTest`31件を含む）。
+- `./gradlew assembleDebug`が成功。
+- 追加テストは実際に元の不具合を検出できることを確認済み（`isActive`テストは`parseArrayElementSafely`の握りつぶしバグ修正前は失敗していた）。
+
+### 次回開始位置
+- T-016（560日規模の実データ対応: インポート時のメモリ削減、S5）に着手。
+
 ## 2026-08-21 補足: subagent-doc-check.pyの既知の誤検知（T-015コミット後）
 
 T-015の実施内容・結果・次回開始位置は下記エントリに記録し、コミット`3d012bd`へ含めて提出済み。

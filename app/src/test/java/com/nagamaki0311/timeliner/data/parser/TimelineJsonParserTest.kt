@@ -659,11 +659,11 @@ class TimelineJsonParserTest {
         var lastEarliest = Long.MIN_VALUE
         var lastLatest = Long.MIN_VALUE
 
-        val track = TimelineJsonParser.parseJson(json.byteInputStream()) { count, earliest, latest ->
+        val track = TimelineJsonParser.parseJson(json.byteInputStream(), onProgress = { count, earliest, latest ->
             reportedPointCounts.add(count)
             lastEarliest = earliest
             lastLatest = latest
-        }
+        })
 
         assertEquals(pointCount, track.pointCount)
         assertTrue("onProgressが少なくとも1回は呼ばれること", reportedPointCounts.isNotEmpty())
@@ -684,11 +684,26 @@ class TimelineJsonParserTest {
         val json = buildRecordsJson(pointCount)
         var callCount = 0
 
-        TimelineJsonParser.parseJson(json.byteInputStream()) { _, _, _ -> callCount++ }
+        TimelineJsonParser.parseJson(json.byteInputStream(), onProgress = { _, _, _ -> callCount++ })
 
         // 点数ベースの間引き閾値が概ね機能していれば、呼び出し回数は点数よりはるかに少ない。
         assertTrue("callCount=$callCount は点数に対して間引かれているはず", callCount < pointCount / 100)
         assertTrue("onProgressが少なくとも1回は呼ばれること", callCount > 0)
+    }
+
+    /**
+     * 初回`addPoint`（`pointCount=1`）時点では基準時刻の初期化のみ行い、`onProgress`を発火しないことを検証する
+     * （docs/decisions.md D-021決定1、レビュー指摘3への対応）。修正前は`lastProgressTimeMillis`の初期値が`0L`のため、
+     * 最初の`addPoint`で経過時間条件が必ず真になり`pointCount=1`という意図しないタイミングで発火していた。
+     */
+    @Test
+    fun parseJson_onProgressCallback_singlePointDoesNotFireImmediately() {
+        val json = buildRecordsJson(1)
+        var callCount = 0
+
+        TimelineJsonParser.parseJson(json.byteInputStream(), onProgress = { _, _, _ -> callCount++ })
+
+        assertEquals(0, callCount)
     }
 
     /** `onProgress`を渡さない（既定null）場合、従来通り例外なくパースできることを検証する。 */
@@ -699,6 +714,62 @@ class TimelineJsonParserTest {
         val track = TimelineJsonParser.parseJson(json.byteInputStream())
 
         assertEquals(10, track.pointCount)
+    }
+
+    /**
+     * `parseZip`が複数エントリをまたいでも同一の`RawTrackBuilder`を共有し、`onProgress`の`pointCount`が
+     * エントリをまたいで累積されることを検証する（docs/decisions.md D-021決定1、レビュー指摘4への対応）。
+     */
+    @Test
+    fun parseZip_multipleEntries_onProgressAccumulatesPointCountAcrossEntries() {
+        val pointsPerEntry = 5_000
+        val zipBytes = buildZip(
+            listOf(
+                "Takeout/Semantic Location History/2023/2023_JANUARY.json" to buildRecordsJson(pointsPerEntry),
+                "Takeout/Semantic Location History/2023/2023_FEBRUARY.json" to buildRecordsJson(pointsPerEntry)
+            )
+        )
+        val reportedPointCounts = mutableListOf<Int>()
+
+        val track = TimelineJsonParser.parseZip(onProgress = { count, _, _ -> reportedPointCounts.add(count) }) {
+            ByteArrayInputStream(zipBytes)
+        }
+
+        assertEquals(pointsPerEntry * 2, track.pointCount)
+        assertTrue("onProgressが少なくとも1回は呼ばれること", reportedPointCounts.isNotEmpty())
+        assertEquals(reportedPointCounts.sorted(), reportedPointCounts)
+        assertTrue(
+            "2エントリ目の点も累積されている（1エントリ分の点数を超えて通知される）はず",
+            reportedPointCounts.last() > pointsPerEntry
+        )
+        assertTrue(reportedPointCounts.last() <= track.pointCount)
+    }
+
+    // ---- キャンセル（docs/decisions.md D-021決定1） ----
+
+    /** `isActive`が`false`を返した場合、パースが打ち切られ`CancellationException`が送出されることを検証する。 */
+    @Test
+    fun parseJson_isActiveBecomesFalse_throwsCancellationException() {
+        val json = buildRecordsJson(50_000)
+
+        assertThrows(kotlinx.coroutines.CancellationException::class.java) {
+            var callCount = 0
+            TimelineJsonParser.parseJson(json.byteInputStream(), isActive = {
+                callCount++
+                callCount < 3
+            })
+        }
+    }
+
+    /** `isActive`を渡さない（既定`{ true }`）場合、従来通りキャンセルされず最後まで正常にパースできることを検証する。 */
+    @Test
+    fun parseJson_isActiveOmitted_parsesSuccessfullyWithoutCancellation() {
+        val pointCount = 10_000
+        val json = buildRecordsJson(pointCount)
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(pointCount, track.pointCount)
     }
 
     private fun buildRecordsJson(pointCount: Int): String {

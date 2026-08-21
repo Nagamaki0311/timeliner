@@ -26,6 +26,7 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.maplibre.android.maps.MapLibreMap
@@ -44,11 +45,16 @@ sealed interface ImportUiState {
      * は総サイズ・総行数を事前に知らないストリーミング走査のため正確な割合は出せず、代わりに
      * 「これまでに読み取った点数」「これまでに見つかった日付範囲」を表示してユーザーが進行を確認できるようにする。
      * コールバックがまだ一度も呼ばれていない開始直後は既定値（[pointCount]=0、日付=null）のまま。
+     *
+     * [writing]は、パース完了後のDB書き込みフェーズ（`repository.commitImport`、`onProgress`は呼ばれない）を
+     * 表す場合`true`。[TimelineViewModel.confirmOverwrite]はパース完了直前の点数・日付範囲を[writing]=`true`で
+     * 引き継ぐことで、書き込み中も表示が唐突に消えないようにする（docs/decisions.md D-021決定1）。
      */
     data class InProgress(
         val pointCount: Int = 0,
         val earliestDate: String? = null,
-        val latestDate: String? = null
+        val latestDate: String? = null,
+        val writing: Boolean = false
     ) : ImportUiState
 
     /**
@@ -306,16 +312,24 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         viewModelScope.launch {
             try {
                 val prepared = withContext(Dispatchers.IO) {
-                    val rawTrack = ImportSource.readRawTrack(appContext, uri) { pointCount, earliestMillis, latestMillis ->
-                        // パーサ内のバックグラウンドスレッド（Dispatchers.IO）から呼ばれるが、
-                        // MutableStateFlow.valueへの代入はスレッドセーフなため問題ない
-                        // （collectAsStateWithLifecycleが安全にMainへ届ける）。
-                        _importState.value = ImportUiState.InProgress(
-                            pointCount = pointCount,
-                            earliestDate = millisToDateString(earliestMillis),
-                            latestDate = millisToDateString(latestMillis)
-                        )
-                    }
+                    val rawTrack = ImportSource.readRawTrack(
+                        appContext,
+                        uri,
+                        onProgress = { pointCount, earliestMillis, latestMillis ->
+                            // パーサ内のバックグラウンドスレッド（Dispatchers.IO）から呼ばれるが、
+                            // MutableStateFlow.valueへの代入はスレッドセーフなため問題ない
+                            // （collectAsStateWithLifecycleが安全にMainへ届ける）。
+                            _importState.value = ImportUiState.InProgress(
+                                pointCount = pointCount,
+                                earliestDate = millisToDateString(earliestMillis),
+                                latestDate = millisToDateString(latestMillis)
+                            )
+                        },
+                        // viewModelScope（を継承したwithContextのコルーチンコンテキスト）のJobが
+                        // キャンセルされた（画面破棄等）後もIOスレッド上でパースが動き続けないようにする
+                        // （docs/decisions.md D-021決定1）。
+                        isActive = { isActive }
+                    )
                     repository.prepareImport(rawTrack)
                 }
                 if (prepared.overwriteDayCount > 0) {
@@ -332,11 +346,21 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         }
     }
 
-    /** [ImportUiState.ConfirmOverwrite]表示中にユーザーが続行を選んだ場合に呼ぶ。書き込みを実行する。 */
+    /**
+     * [ImportUiState.ConfirmOverwrite]表示中にユーザーが続行を選んだ場合に呼ぶ。書き込みを実行する。
+     * DB書き込みフェーズ（[commitPreparedImport]）は`onProgress`が呼ばれないため、[ImportUiState.InProgress]を
+     * 既定値へリセットせず、[pendingImport]（パース確定済みの点数・日付範囲）から引き継ぎ、[ImportUiState.InProgress.writing]=`true`
+     * で表示を継続する（docs/decisions.md D-021決定1）。
+     */
     fun confirmOverwrite() {
         val prepared = pendingImport ?: return
         pendingImport = null
-        _importState.value = ImportUiState.InProgress()
+        _importState.value = ImportUiState.InProgress(
+            pointCount = prepared.pointCount,
+            earliestDate = prepared.dayGroups.minOfOrNull { it.date },
+            latestDate = prepared.dayGroups.maxOfOrNull { it.date },
+            writing = true
+        )
         viewModelScope.launch {
             commitPreparedImport(prepared)
         }

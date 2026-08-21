@@ -65,7 +65,8 @@ fun ImportScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
             is ImportUiState.InProgress -> {
                 CircularProgressIndicator()
                 if (current.pointCount > 0) {
-                    Text("読み込み中… 現在${current.pointCount}件（${current.earliestDate ?: "-"} 〜 ${current.latestDate ?: "-"}）")
+                    val label = if (current.writing) "書き込み中" else "読み込み中"
+                    Text("$label… 現在${current.pointCount}件（${current.earliestDate ?: "-"} 〜 ${current.latestDate ?: "-"}）")
                 } else {
                     Text("インポート中…")
                 }

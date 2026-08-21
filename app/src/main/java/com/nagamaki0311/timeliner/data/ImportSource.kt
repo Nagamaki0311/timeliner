@@ -24,20 +24,21 @@ object ImportSource {
 
     /**
      * [uri]の内容を判別してパースし、[RawTrack]へ正規化する。
-     * [onProgress]は[TimelineJsonParser.parseJson]/[TimelineJsonParser.parseZip]へそのまま橋渡しする
-     * 進捗コールバック（docs/tasks.md T-015）。
+     * [onProgress]/[isActive]は[TimelineJsonParser.parseJson]/[TimelineJsonParser.parseZip]へそのまま橋渡しする
+     * 進捗コールバック・継続可否チェック（docs/tasks.md T-015、docs/decisions.md D-021決定1）。
      */
     fun readRawTrack(
         context: Context,
         uri: Uri,
-        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null
+        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null,
+        isActive: () -> Boolean = { true }
     ): RawTrack {
         val resolver = context.contentResolver
         val opener: () -> InputStream = { openOrThrow(resolver, uri) }
         return if (isZip(uri, opener)) {
-            TimelineJsonParser.parseZip(onProgress, opener)
+            TimelineJsonParser.parseZip(onProgress, isActive, opener)
         } else {
-            opener().use { TimelineJsonParser.parseJson(it, onProgress) }
+            opener().use { TimelineJsonParser.parseJson(it, onProgress, isActive) }
         }
     }
 
