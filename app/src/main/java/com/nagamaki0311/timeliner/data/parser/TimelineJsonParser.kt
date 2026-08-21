@@ -1,8 +1,8 @@
 package com.nagamaki0311.timeliner.data.parser
 
 import android.util.Log
+import com.google.gson.JsonParseException
 import com.google.gson.JsonParser
-import com.google.gson.JsonSyntaxException
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import com.nagamaki0311.timeliner.model.RawTrack
@@ -205,7 +205,7 @@ object TimelineJsonParser {
             }
         } catch (e: IOException) {
             return recoverRootObjectOrRethrow(e, format, builder)
-        } catch (e: JsonSyntaxException) {
+        } catch (e: JsonParseException) {
             return recoverRootObjectOrRethrow(e, format, builder)
         }
         reader.endObject()
@@ -213,7 +213,7 @@ object TimelineJsonParser {
     }
 
     /**
-     * ルートオブジェクト走査中にストリーム破損由来の例外（`IOException`系/`JsonSyntaxException`）が
+     * ルートオブジェクト走査中にストリーム破損由来の例外（`IOException`系/`JsonParseException`系）が
      * 発生した際、既に主要キーから有効なデータを1件以上読み終えていれば（=`format`確定かつ
      * `builder`が空でなければ）そのデータを保持したまま復旧する（docs/decisions.md D-015決定3）。
      * `format`は判明したが1件もデータを読めなかった場合（真の失敗）は救済せず再送出する。

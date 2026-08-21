@@ -3,6 +3,8 @@ package com.nagamaki0311.timeliner.data.parser
 import com.nagamaki0311.timeliner.model.TimelineSegmentType
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.InputStream
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import org.junit.Assert.assertEquals
@@ -491,6 +493,70 @@ class TimelineJsonParserTest {
         assertEquals(1, track.pointCount)
         assertEquals(0, track.segments.size)
         assertEquals(35.6812, track.point(0).latitude, 1e-9)
+    }
+
+    // ---- レビュー指摘（docs/decisions.md D-016）: 非EOF系IOExceptionがJsonIOExceptionへ
+    //      ラップされて送出されるケースからの回復 ----
+
+    /**
+     * Gsonの`JsonParser.parseReader(reader)`（[TimelineJsonParser]の`parseArrayElementSafely`が
+     * 配列要素単位のJSONツリー化に使用）は、主ストリームからの非EOF系（`EOFException`ではない）
+     * 通常の`IOException`を`com.google.gson.JsonIOException`にラップして送出する
+     * （gson 2.14.0の`com.google.gson.internal.Streams.parse`のバイトコードで確認済み）。
+     * `JsonIOException`は`JsonSyntaxException`のサブクラスではなく`java.io.IOException`の
+     * サブクラスでもないため、`semanticSegments`の2件目の要素消費中にこの種の`IOException`が
+     * 発生しても、1件目までの有効なデータを保持したまま例外を投げずに復旧できることを検証する
+     * （D-016、`catch (e: JsonParseException)`への変更で捕捉できることの確認）。
+     */
+    @Test
+    fun parseJson_nonEofIOExceptionDuringSecondElementParsing_recoversFirstElementData() {
+        val validFirstElementJson =
+            "{\"startTime\":\"1700000000000\",\"endTime\":\"1700000001000\"," +
+                "\"visit\":{\"topCandidate\":{\"placeId\":\"ChIJ_IO_ERROR_RECOVERY\"," +
+                "\"placeLocation\":{\"latLng\":\"35.6812°, 139.7671°\"}}}}"
+        val validPrefix = "{\"semanticSegments\":[$validFirstElementJson,"
+        val secondElementJson = "{\"startTime\":\"1700000002000\",\"endTime\":\"1700000003000\"}]}"
+        val fullJson = validPrefix + secondElementJson
+
+        // 1件目の要素＋直後のカンマまでは正常に読めるが、2件目の要素の内容を読み進める途中
+        // （配列末尾や閉じ括弧などのEOF相当の位置ではない）で意図的に非EOF系のIOExceptionを送出する。
+        val thresholdBytes = validPrefix.toByteArray(Charsets.UTF_8).size + 5
+        val input = FailingAfterThresholdInputStream(fullJson.toByteArray(Charsets.UTF_8), thresholdBytes)
+
+        val track = TimelineJsonParser.parseJson(input)
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1, track.segments.size)
+        assertEquals("ChIJ_IO_ERROR_RECOVERY", track.segments[0].placeId)
+    }
+
+    /**
+     * [parseJson_nonEofIOExceptionDuringSecondElementParsing_recoversFirstElementData]用の
+     * テスト専用`InputStream`。指定バイト数までは正常にデータを返すが、それ以降の読み取りでは
+     * `EOFException`ではない通常の`IOException`を送出する（意図的な非EOF系読み取りエラーの再現）。
+     */
+    private class FailingAfterThresholdInputStream(
+        private val bytes: ByteArray,
+        private val thresholdBytes: Int
+    ) : InputStream() {
+        private var position = 0
+
+        override fun read(): Int {
+            if (position >= thresholdBytes || position >= bytes.size) {
+                throw IOException("simulated non-EOF read error")
+            }
+            return bytes[position++].toInt() and 0xFF
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            val allowed = minOf(len, thresholdBytes - position, bytes.size - position)
+            if (allowed <= 0) {
+                throw IOException("simulated non-EOF read error")
+            }
+            System.arraycopy(bytes, position, b, off, allowed)
+            position += allowed
+            return allowed
+        }
     }
 
     // ---- zip: 複数データ源の優先順位付け・時刻ソート ----

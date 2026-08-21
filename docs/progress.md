@@ -17,6 +17,25 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-011c T-011b再検証指摘の修正（JsonIOExceptionが例外型絞り込みの穴になっていた）
+
+### 実施内容
+- D-016の決定に従い`TimelineJsonParser.kt`を修正した。
+  - `import com.google.gson.JsonSyntaxException`を`import com.google.gson.JsonParseException`へ変更。
+  - `parseRootObject`の`catch (e: JsonSyntaxException)`を`catch (e: JsonParseException)`へ変更（`catch (e: IOException)`はそのまま維持）。
+  - `recoverRootObjectOrRethrow`のKDocコメント内の`JsonSyntaxException`表記も`JsonParseException`系へ更新。
+- 対象ファイル: `app/src/main/java/com/nagamaki0311/timeliner/data/parser/TimelineJsonParser.kt`。
+
+### 結果
+- `TimelineJsonParserTest.kt`に、D-016で特定されたJsonIOException経路を再現する回帰テストを追加した。
+  - `parseJson_nonEofIOExceptionDuringSecondElementParsing_recoversFirstElementData`: `semanticSegments`の1件目が有効なVISITとして読み終わった後、2件目の要素消費中（`JsonParser.parseReader`によるツリー化の途中）に非EOF系の通常`IOException`（`EOFException`ではない）を意図的に送出するテスト専用`InputStream`（`FailingAfterThresholdInputStream`）を使い、例外を投げずに1件目のデータ（点1件・セグメント1件・`placeId`一致）を保持したまま復旧することを確認した。
+  - 修正前のコード（`catch (e: JsonSyntaxException)`のまま）に対して同テストを実行し、`com.google.gson.JsonIOException`が未捕捉のまま`parseJson`外へ伝播して失敗することを確認済み（回帰テストとして有効であることの裏付け）。修正後は全件パス。
+- `./gradlew testDebugUnitTest`成功（新規1件含め全件パス）。
+- `./gradlew assembleDebug`成功。
+
+### 次回開始位置
+- 特になし。T-011c完了、T-011bも完了へ戻す。
+
 ## 2026-08-21 T-011b T-011レビュー指摘の修正（保護範囲の見落とし2件、例外型の絞り込み）
 
 ### 実施内容

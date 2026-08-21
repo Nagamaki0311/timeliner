@@ -33,8 +33,8 @@
 | T-010 | 実機フィードバック対応: edge-to-edge表示でシステムUIと画面端の要素が重なる | 高 | 完了 | developer | ユーザーが実機インストールして発見。ステータスバー/ナビゲーションバー分のinsetをComposeレイアウトが確保しておらず、上部タブ・下部の再生/保存ボタンが操作不能になっていた。D-012参照。Reviewer指摘はT-010bで対応済み（D-013参照） |
 | T-010b | T-010レビュー指摘の修正（ランドスケープ+レガシーナビゲーションバーでの横方向inset未対応） | 中 | 完了 | developer | D-013参照。PeriodSelector・PlaybackControlsに横方向のみのnavigationBars insetを追加 |
 | T-011 | 実機報告対応: rawSignals読み飛ばし失敗でインポート全体が失敗する不具合を修正 | 高 | 完了 | developer | ユーザーが実際のTimelineエクスポートファイル（130万行超）をインポートし`End of input`で失敗。`rawSignals`等の未知キー読み飛ばし失敗が既にパース済みの有効データごと破棄する設計欠陥を修正。D-014参照。Reviewer指摘への対応はT-011bで完了（D-015参照） |
-| T-011b | T-011レビュー指摘の修正（保護範囲の見落とし2件、例外型の絞り込み） | 高 | レビュー中 | developer | D-015参照。同種のデータ損失が主要配列自身の途中失敗・キー境界での失敗でも再発する問題を修正し、境界値テスト3件を追加。再検証でJsonIOExceptionの見落としが発覚しT-011cで修正中（D-016参照） |
-| T-011c | T-011b再検証指摘の修正（JsonIOExceptionが例外型絞り込みの穴になっていた） | 高 | 未着手 | developer | D-016参照。catch (JsonSyntaxException)をcatch (JsonParseException)へ変更する1行修正 |
+| T-011b | T-011レビュー指摘の修正（保護範囲の見落とし2件、例外型の絞り込み） | 高 | 完了 | developer | D-015参照。同種のデータ損失が主要配列自身の途中失敗・キー境界での失敗でも再発する問題を修正し、境界値テスト3件を追加。再検証でJsonIOExceptionの見落としが発覚したがT-011cで対応完了（D-016参照） |
+| T-011c | T-011b再検証指摘の修正（JsonIOExceptionが例外型絞り込みの穴になっていた） | 高 | 完了 | developer | D-016参照。catch (JsonSyntaxException)をcatch (JsonParseException)へ変更する1行修正。非EOF系IOExceptionがJsonIOExceptionへラップされ2件目要素消費中に発生するケースの回復テストを追加 |
 
 ## バックログ（未着手・優先度未確定）
 
