@@ -437,4 +437,25 @@
 
 ### 影響
 - 以降、`parseRootObject`の保護範囲は「ループ全体（条件式含む）」かつ「収集済みデータの有無」で判定する設計を踏襲する。
+- 本Dの決定4（例外型の絞り込み）は後継のD-016で修正された（`JsonSyntaxException`単体では不十分だったことが判明）。
+
+---
+
+## D-016: T-011b再検証指摘への対応方針（JsonIOExceptionが例外型絞り込みの穴になっていた）
+
+- 日付: 2026-08-21
+- 状態: 採用
+
+### 背景
+- T-011b（D-015決定4）で`catch (e: Exception)`を`catch (e: IOException)`/`catch (e: JsonSyntaxException)`の2節に絞り込んだ。Reviewerが再検証時、実際のgson 2.14.0のソースを確認し、`parseArrayElementSafely`が使う`JsonParser.parseReader(reader)`（`Streams.parse`経由）が、主ストリームからの**非EOF系の通常`IOException`**を`com.google.gson.JsonIOException`にラップして送出することを発見した。`JsonIOException`は`JsonParseException`の直接のサブクラスであり、`JsonSyntaxException`にも`java.io.IOException`にも該当しないため、D-015で絞り込んだいずれのcatch節にも一致せず、そのまま`parseRootObject`の外へ伝播する。実際に本番コードパスへ非EOFの`IOException`を注入する再現テストで、`format`確定済み・有効データありの状態でも全データが失われることを実測で確認した。
+- D-015決定4は「D-014の実測で確認された2系統（EOFException/MalformedJsonException経由のJsonSyntaxException）」のみを根拠にしており、Gsonが`IOException`全般を`JsonIOException`へラップするパターンを見落としていた。旧実装の`catch (e: Exception)`（広すぎる捕捉）はこのケースも偶然拾えていたため、型を絞り込んだことで回帰的にこの経路が塞がれていた。
+
+### 決定
+- `TimelineJsonParser.kt`の`catch (e: JsonSyntaxException)`を`catch (e: JsonParseException)`に変更する（`import`も同様に変更する）。`JsonSyntaxException`・`JsonIOException`はいずれも`com.google.gson.JsonParseException`の直接のサブクラスであるため、この1行の型変更で両方を捕捉できる。`catch (e: IOException)`はそのまま維持する（Gson内部でラップされずそのまま伝播する`IOException`もありうるため）。
+
+### 理由
+- 1行の型変更で、D-015決定4が意図した「ストリーム破損由来の例外と実装バグ由来の例外を型で区別する」という目的を保ったまま（`JsonParseException`を継承しない実装バグ由来の`RuntimeException`は引き続き再送出される）、見落としていた穴だけを塞げる最小差分であるため。
+
+### 影響
+- 以降、`parseRootObject`の例外捕捉範囲は`IOException`と`JsonParseException`（そのサブクラス全般）の2系統とする。
 
