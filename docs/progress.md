@@ -37,7 +37,14 @@ D-019の決定に従い2件を修正した。
 - T-013・T-013bを完了とする。T-014（560日規模の実データ対応: 概観点列と詳細ウィンドウの導入、S3）に着手する。D-017参照。
 
 ### コミット
-- 本タスクの変更（`RouteOverlayView.kt`・新設`PlaybackControllerTest.kt`・docs/tasks.md含む）はコミット済み（コミットハッシュ`091b151`、コミットメッセージ先頭行: `T-013b: レビュー指摘（ズームバケット往復時のキャッシュ確定条件、並行性テスト欠如）を修正する`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
+- 本タスクの変更（`RouteOverlayView.kt`・新設`PlaybackControllerTest.kt`・docs/tasks.md含む）はコミット済み（コミットハッシュ`091b151`、コミットメッセージ先頭行: `T-013b: レビュー指摘（ズームバケット往復時のキャッシュ確定条件、並行性テスト欠如）を修正する`）。
+
+### 再確認（セッション再開後）
+- 直前のコンテキスト圧縮により本エントリ自体もコミット`091b151`に含まれてしまい、Stop Hook（subagent-doc-check）が検知する「未コミット差分」が残っていなかった。再開後、コミット済みのT-013b成果物（`RouteOverlayView.kt`のズームバケット再確認ロジック、`PlaybackControllerTest.kt`のケース1/2）を読み直して内容を確認した上で、以下を再実行して退行がないことを再確認した。
+  - `./gradlew testDebugUnitTest`（全147件成功）。
+  - `./gradlew testDebugUnitTest --rerun-tasks --tests "com.nagamaki0311.timeliner.playback.PlaybackControllerTest"`（キャッシュを使わず再実行、2件とも成功）。
+  - `./gradlew assembleDebug`（成功）。
+- 本行の追記自体はStop Hookが未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
 
 ## 2026-08-21 T-013 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2）
 
