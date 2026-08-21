@@ -3,9 +3,11 @@ package com.nagamaki0311.timeliner.ui
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Button
@@ -51,8 +53,16 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
     // 書き出し処理そのものの状態(ExportUiState)はViewModelが保持する（ImportScreenの確認ダイアログと同じ分離）。
     var exportDialogVisible by remember { mutableStateOf(false) }
 
+    // ランドスケープ+レガシー（2/3ボタン）ナビゲーションではナビゲーションバーが画面左右に移動するため、
+    // TabRow/Button側の縦方向inset対応（docs/decisions.md D-012）と重複しないよう横方向のみ確保する（D-013）。
+    val horizontalNavBarInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)
+
     Column(modifier = modifier.fillMaxSize()) {
-        PeriodSelector(period = period, onPeriodChange = viewModel::selectPeriod)
+        PeriodSelector(
+            period = period,
+            onPeriodChange = viewModel::selectPeriod,
+            modifier = Modifier.windowInsetsPadding(horizontalNavBarInsets)
+        )
         Box(modifier = Modifier.fillMaxSize().weight(1f)) {
             MapContainer(
                 modifier = Modifier.fillMaxSize(),
@@ -85,7 +95,8 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
                 isSeeking = false
                 if (resumePlaybackAfterSeek) viewModel.play()
             },
-            onSpeedModeChange = viewModel::setSpeedMode
+            onSpeedModeChange = viewModel::setSpeedMode,
+            modifier = Modifier.windowInsetsPadding(horizontalNavBarInsets)
         )
         // 画面最下部の操作ボタンはナビゲーションバー（ジェスチャーバー含む）と重ならないよう
         // 自前で余白を確保する（MainActivity.ktのTabRowと同じ理由、docs/decisions.md D-012）。

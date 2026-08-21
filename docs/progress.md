@@ -17,6 +17,23 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-010b T-010レビュー指摘の修正（ランドスケープ+レガシーナビゲーションバーでの横方向inset未対応）
+
+### 実施内容
+- D-013の決定に従い、`app/src/main/java/com/nagamaki0311/timeliner/ui/TimelineScreen.kt`の`PeriodSelector`・`PlaybackControls`の呼び出し箇所に`Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))`を追加した。両Composableとも既存の`modifier`パラメータを外側の`Column`に適用する設計だったため、呼び出し側でのpadding指定のみで内部の`fillMaxWidth()`要素（前後移動ボタン、シークバー、速度モード選択ボタン群）すべてに横方向のinsetが伝播する。
+- `horizontalNavBarInsets`（`WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)`）を`TimelineScreen`関数内で1回だけ計算し、両呼び出し箇所で使い回した（D-012が確保済みの縦方向insetとの重複を避けるため`WindowInsetsSides.Horizontal`で明示的に限定）。
+- `MainActivity.kt`のTabRow（ステータスバー、画面上端固定で左右のシステムバーとは接しない）・`ImportScreen.kt`（ルート`Column`に`WindowInsets.navigationBars`を全方向で適用済み）はD-013の決定通り変更していない。
+
+### 結果
+- `./gradlew testDebugUnitTest`成功。今回の変更はCompose UI（`Modifier`のみ）でAndroid API依存のためJVM単体テスト対象外（D-003と同種の制約）、新規テストは追加していない。
+- `./gradlew assembleDebug`成功。
+
+### 懸念点（既知の制約）
+- 実機・エミュレータが本開発環境に無いため、ランドスケープ+2/3ボタンナビゲーションの実機で実際にボタン・シークバーが操作可能になったかの目視確認はできていない（D-003以来一貫した既知の制約）。修正の妥当性は`WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal)`というAndroid公式APIの一般的な使用方法との整合性、コードレビューでの確認に留まる。
+
+### 次回開始位置
+- 特になし。T-010bの完了によりT-010（親タスク）も完了に戻る。実機・エミュレータが利用可能になった時点で、本タスク・T-010双方の修正が実際にシステムバーとの重なりを解消しているかの目視確認を行うことが望ましい。
+
 ## 2026-08-21 T-010 実機フィードバック対応: edge-to-edge表示でシステムUIと画面端の要素が重なる
 
 ### 実施内容
