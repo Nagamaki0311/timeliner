@@ -35,7 +35,9 @@ D-019の決定に従い2件を修正した。
 
 ### 次回開始位置
 - T-013・T-013bを完了とする。T-014（560日規模の実データ対応: 概観点列と詳細ウィンドウの導入、S3）に着手する。D-017参照。
-- 本タスクの変更（`RouteOverlayView.kt`・新設`PlaybackControllerTest.kt`・docs/tasks.md・docs/progress.md含む）はコミット予定（Manager確認後）。
+
+### コミット
+- 本タスクの変更（`RouteOverlayView.kt`・新設`PlaybackControllerTest.kt`・docs/tasks.md含む）はコミット済み（コミットハッシュ`091b151`、コミットメッセージ先頭行: `T-013b: レビュー指摘（ズームバケット往復時のキャッシュ確定条件、並行性テスト欠如）を修正する`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
 
 ## 2026-08-21 T-013 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2）
 
