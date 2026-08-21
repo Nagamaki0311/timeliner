@@ -274,11 +274,15 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
             options: CleanOptions,
             existingDatesLookup: (List<String>) -> Set<String>
         ): PreparedImport {
+            // track.segmentsを先に取り出しておく。track（点列本体、130万点規模では約31MB）をこれ以降
+            // 参照しないようにし、クリーニング・日単位分割の実行中に少しでも早く回収対象にできるようにする
+            // （docs/tasks.md T-016）。
+            val segments = track.segments
             val cleaned = TrackCleaner.clean(track, options)
             val dayGroups = groupPointsByLocalDate(cleaned)
             val existing = existingDatesLookup(dayGroups.map { it.date })
             val overwriteDayCount = dayGroups.count { it.date in existing }
-            return PreparedImport(dayGroups, track.segments, cleaned.pointCount, overwriteDayCount)
+            return PreparedImport(dayGroups, segments, cleaned.pointCount, overwriteDayCount)
         }
 
         private fun localDateOf(millis: Long): String =

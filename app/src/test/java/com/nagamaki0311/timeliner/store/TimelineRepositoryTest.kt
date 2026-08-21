@@ -3,6 +3,7 @@ package com.nagamaki0311.timeliner.store
 import com.nagamaki0311.timeliner.model.RawTrack
 import com.nagamaki0311.timeliner.process.CleanOptions
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 import java.time.ZoneId
@@ -58,6 +59,48 @@ class TimelineRepositoryTest {
         val prepared = TimelineRepository.buildPreparedImport(track, CleanOptions()) { setOf("1999-01-01") }
 
         assertEquals(0, prepared.overwriteDayCount)
+    }
+
+    /**
+     * 560日規模・130万点超の実データ相当の合成入力で、クリーニング（[com.nagamaki0311.timeliner.process.TrackCleaner]の
+     * 4段パイプライン）〜日単位分割（[TimelineRepository.buildPreparedImport]内の`groupPointsByLocalDate`）の
+     * フルパイプラインがクラッシュせず、点の欠落・重複が無いことを確認する（docs/decisions.md D-017・docs/tasks.md T-016）。
+     * 各点の移動量・間隔は速度スパイク除去（300km/h超）・停留ジッタ抑制（15m未満かつ60秒未満）のいずれの
+     * 閾値にも該当しないよう設計しており、クリーニングで1点も除去されない入力になっている
+     * （[SimplifierTest][com.nagamaki0311.timeliner.process.SimplifierTest]の大規模合成データによる検証手法を踏襲）。
+     */
+    @Test
+    fun buildPreparedImport_largeScale560DayTrack_completesWithoutCrashAndPreservesAllPoints() {
+        val pointCount = 1_300_000
+        val startMillis = Instant.parse("2024-01-01T00:00:00Z").toEpochMilli()
+        val totalDurationMillis = 560L * 24 * 60 * 60 * 1000
+        val stepMillis = totalDurationMillis / pointCount
+
+        val latitudes = DoubleArray(pointCount)
+        val longitudes = DoubleArray(pointCount)
+        val timestamps = LongArray(pointCount)
+        var lat = 35.0
+        var direction = 1.0
+        val amplitudeDegrees = 5.0
+        for (i in 0 until pointCount) {
+            // 常に約22m（0.0002度、停留ジッタの閾値15mを常に上回る）だけ移動させ続ける。
+            // 緯度の有効範囲を超えないよう、振幅5度の範囲で往復させる（折り返し時も移動量は一定のまま）。
+            lat += direction * 0.0002
+            if (lat > 35.0 + amplitudeDegrees) direction = -1.0
+            if (lat < 35.0 - amplitudeDegrees) direction = 1.0
+            latitudes[i] = lat
+            longitudes[i] = 139.0
+            timestamps[i] = startMillis + i.toLong() * stepMillis
+        }
+        val track = RawTrack(latitudes, longitudes, timestamps, emptyList())
+
+        val prepared = TimelineRepository.buildPreparedImport(track, CleanOptions()) { emptySet() }
+
+        assertEquals(pointCount, prepared.pointCount)
+        assertEquals(pointCount, prepared.dayGroups.sumOf { it.latitudes.size })
+        // 開始日・終了日の実際の暦日数はテスト実行環境のタイムゾーンにより1日程度前後しうるため、
+        // 560日規模であることのみを確認する（環境依存で不安定になる厳密な日数一致は避ける）。
+        assertTrue("dayGroups.size=${prepared.dayGroups.size}", prepared.dayGroups.size in 555..565)
     }
 
     /**

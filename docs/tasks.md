@@ -43,7 +43,7 @@
 | T-014b | T-014レビュー指摘の修正（RouteOverviewキャッシュの並行性テスト欠如、無効化時の未キャンセルJob、未使用メソッド） | 高 | 完了 | developer | D-020参照。世代ガード付きキャッシュロジックをTimelineViewModelからRouteOverviewCache（DB非依存）へ切り出しRouteOverviewCacheTestで検証、invalidate()がbuildJob.cancel()を呼ぶよう修正、未使用のTimelineRepository.queryDayDates()を削除。詳細はdocs/progress.md参照 |
 | T-015 | 560日規模の実データ対応: インポート進捗表示（S4） | 高 | 完了 | developer | D-017参照。要件「読み込み完了をユーザーが明確に確認できる」に対応。TimelineJsonParser.parseJson/parseZipに間引き付きonProgressコールバックを追加し、ImportUiState.InProgressをdata class化してImportScreenへ点数・日付範囲を表示 |
 | T-015b | T-015レビュー指摘の修正（confirmOverwrite後の進捗リセット、インポートのキャンセル不能、初回発火の早期化） | 高 | 完了 | developer | D-021参照。confirmOverwrite()がpendingImportから点数・日付範囲を引き継ぎwriting=trueで書き込み中も表示継続、TimelineJsonParser.parseJson/parseZipにisActive引数を追加しviewModelScopeのisActiveをTimelineViewModel→ImportSource経由で橋渡し、RawTrackBuilder.lastProgressTimeMillisの初期値をnull化して初回addPoint時の早期発火を防止、parseZipのonProgress累積テストを追加。修正中にparseArrayElementSafelyがCancellationExceptionを誤って握りつぶす別バグも発見し合わせて修正 |
-| T-016 | 560日規模の実データ対応: インポート時のメモリ削減（S5） | 中 | 未着手 | developer | D-017参照 |
+| T-016 | 560日規模の実データ対応: インポート時のメモリ削減（S5） | 中 | 完了 | developer | D-017参照。同時生存しうるフルコピー数（約3つ、130万点規模で約93MB）を調査した上で、`android:largeHeap="true"`追加、`TrackCleaner.PointBuffer.trim()`の無変化時コピー省略、`RawTrackBuilder.build()`の既ソート時コピー省略、`buildPreparedImport`での`track.segments`早期退避を実施。パイプライン段数削減・DayGroup参照方式化・2フェーズ設計変更は大規模な設計変更のため見送りバックログへ記録（詳細はdocs/progress.md参照） |
 | T-017 | 560日規模の実データ対応: 全期間の期間種別（S6） | 中 | 未着手 | developer | D-017参照。PeriodType.ALLの新設、D-017決定1（既定を全期間にする） |
 | T-018 | 560日規模の実データ対応: 再生時間選択肢の変更（S7） | 中 | 未着手 | developer | D-017参照。30/60/120/180/300秒、既定60秒へ変更。D-017決定2（全期間選択時は手動モード無効化） |
 | T-019 | 560日規模の実データ対応: 関心度モデルの改善（S8） | 中 | 未着手 | developer | D-017参照。滞在時間・長距離移動の頭打ち、イベント密度の反映 |
@@ -73,6 +73,9 @@
 - `parseZip`が複数エントリを走査中、あるエントリの`parseRoot`が`format`未確定のまま例外を投げると、それ以前に処理済みだった別エントリのデータもろとも失われる件（T-011で発見、稀な複合条件のため見送り。D-014参照）
 - `Simplifier.decimateNonProtected`内の到達不能な分岐（デッドコード、実害なし）とprotectedCount==maxPointCount境界値の専用テスト追加（T-012bレビューLow/Nit、見送り。D-018参照）
 - `TimelineViewModel._routePoints`/`_routeBounds`が別々の`StateFlow`への逐次代入のため、理論上`LaunchedEffect`が新旧混在の組み合わせで一瞬発火しうる件（T-014レビューLow/PLAUSIBLE、自己修正見込みで実害なしのため見送り。D-020参照）
+- `TimelineJsonParser.parseArrayElementSafely`の要素単位2度読み（JsonElement構築→toString→再パース）のCPU/GCchurn削減（T-016調査、要素単位の一時オブジェクトで持続的なメモリ増加の主因ではないと判断し見送り。D-004決定3の設計を維持）
+- `TrackCleaner`のパイプライン段数削減（normalize/removeSpeedSpikes/suppressStationaryJitterの統合）によるさらなるコピー削減（T-016調査、実機・実データでの検証ができない環境下でのリスクが実質的な効果を正当化できないため見送り）
+- `TimelineRepository.DayGroup`をコピー無しの参照（オフセット+長さ）方式へ全面書き換える案、`prepareImport`/`commitImport`の2フェーズ設計自体をストリーミング書き込みへ変更する案（T-016調査、いずれも大規模な設計変更のため見送り。前者は`PointBlobCodec`等の全呼び出し元への波及、後者は上書き確認ダイアログ（D-006）の前提と衝突する）
 
 ## メモ
 

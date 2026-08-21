@@ -13,12 +13,18 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
 
+    <!--
+      560日規模（130万点超）のTimeline JSONインポート時、パース結果・クリーニング後の点列・日単位分割結果が
+      一時的に複数同時生存しうる（数十MB規模、docs/decisions.md D-017・docs/tasks.md T-016）。
+      低性能端末の既定ヒープ上限（192〜256MB程度）ではOOMのリスクがあるため、大容量ヒープを要求する。
+    -->
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
+        android:largeHeap="true"
         android:theme="@style/Theme.Timeliner">
         <activity
             android:name=".MainActivity"

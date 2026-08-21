@@ -820,6 +820,18 @@ private class RawTrackBuilder(
     }
 
     fun build(): RawTrack {
+        if (isAlreadySortedAscending()) {
+            // 既に時刻昇順（単一ファイル・単一zipエントリの典型的な入力）なら、ボクシングを伴う
+            // sortedBy（1.3M点規模ではInteger boxingだけで数十MBの一時ゴミを生む）とインデックス経由の
+            // 並べ替えコピーを省略し、末尾の余剰容量（grow()由来）を切り詰めるコピーのみ行う
+            // （TrackCleaner.normalizeのsortedIndicesと同じ判定パターン、docs/tasks.md T-016）。
+            return RawTrack(
+                latitudes = latitudes.copyOf(size),
+                longitudes = longitudes.copyOf(size),
+                timestampsMillis = timestamps.copyOf(size),
+                segments = segments.toList()
+            )
+        }
         // 安定ソート（KotlinのsortedByはマージソート相当で安定）。同時刻点は元の追加順を保つ。
         val order = (0 until size).sortedBy { timestamps[it] }
         val sortedLatitudes = DoubleArray(size)
@@ -836,6 +848,13 @@ private class RawTrackBuilder(
             timestampsMillis = sortedTimestamps,
             segments = segments.toList()
         )
+    }
+
+    private fun isAlreadySortedAscending(): Boolean {
+        for (i in 1 until size) {
+            if (timestamps[i] < timestamps[i - 1]) return false
+        }
+        return true
     }
 
     companion object {

@@ -17,6 +17,43 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-016 560日規模の実データ対応: インポート時のメモリ削減（S5）
+
+### 実施内容
+D-017（フェーズS5）に基づき、560日分（130万点超）のTimeline JSONインポート時のメモリ特性を調査し、AGENTS.mdの判定ラダーに従って費用対効果の高い対策から実装した。
+
+**調査結果（同時生存しうるフルコピー数の見積もり）**
+
+対象コードを実際に読み、参照関係・生存期間を追跡した。130万点規模では緯度・経度・時刻の3配列（各`DoubleArray`/`LongArray`）のフルコピー1組が約31MB。
+
+1. `RawTrackBuilder.build()`（`TimelineJsonParser.kt`）: `grow()`で2倍拡張しため最大約2倍オーバーサイズな内部配列（未使用領域含む）＋ソート用の`(0 until size).sortedBy{}`が生成する**ボクシングされた`List<Integer>`**（130万要素で数十MBの一時ゴミ）＋ソート結果を格納する新規3配列、が`build()`呼び出し中に同時生存しうる。
+2. `TrackCleaner.clean()`: `normalize`→`removeSpeedSpikes`→`suppressStationaryJitter`の各段が新しい`PointSeries`（フルコピー、約31MB/段）を生成する。各段の入力（前段の出力）は次段呼び出し後に参照されなくなるため理論上はGC対象になるが、`clean()`の引数`track`（元の`RawTrack`、約31MB）は`TimelineRepository.buildPreparedImport`側で`clean()`呼び出し後も`track.segments`のために参照され続けるため、**`track`自体は`clean()`〜`groupPointsByLocalDate()`の全期間を通じて生存し続ける**。
+3. `TimelineRepository.buildPreparedImport`: `groupPointsByLocalDate(cleaned)`が`cleaned`（`CleanedTrack`、約31MB）の各日付範囲を`copyOfRange`でコピーし`DayGroup`のリストへ積み上げる。ループ完了時点で`dayGroups`の総サイズは`cleaned`と同じ約31MBに達するため、ループ終盤は`cleaned`（31MB）＋`dayGroups`（31MBへ成長中）が同時生存する。
+4. `PreparedImport`（`dayGroups`一式、約31MB）は`prepareImport`から`commitImport`（DB書き込みトランザクション全体）が終わるまで保持され続ける（2フェーズ設計＝上書き確認ダイアログのため）。
+
+以上はコード追跡による見積もりであり、ピーク時に約3つのフルコピー相当（`track`31MB＋`cleaned`31MB＋成長中の`dayGroups`最大31MB≒93MB）に加え、`RawTrackBuilder.build()`のソート処理中の一時的なボクシングオーバーヘッド（数十MB規模、独立したタイミングで発生）が重なりうる。デフォルトヒープ上限（低性能端末で192〜256MB程度）に対し看過できない規模と判断した。
+
+**採用した対策（判定ラダーに従い費用対効果の高い順）**
+
+1. **`android:largeHeap="true"`を`AndroidManifest.xml`へ追加**（判定ラダー6「1行で書けるか」）。既定ヒープの1.5〜2倍程度を確保でき、上記ピーク見積もり（約100MB強）に対する安全マージンとして最も効果対効果が高い。
+2. **`TrackCleaner.PointBuffer.trim()`が、1点も除去されなかった場合（`size == 内部配列長`）はコピーを省略し内部配列をそのまま使い回すよう変更**。実データでは「速度スパイク」「原点・範囲外座標」は稀で、`normalize`・`removeSpeedSpikes`の2段はほぼ全点が生き残ることが多く、この2段では従来無条件に発生していた最終コピー（各約31MB）が実質的に省略される。`PointBuffer`はこの呼び出しを最後に使い捨てる設計のため、内部配列の共有は安全（既存`TrackCleanerTest`はいずれも配列の同一性を検証していないため非破壊）。
+3. **`RawTrackBuilder.build()`が、追加順が既に時刻昇順なら`sortedBy`（ボクシングされた`List<Integer>`生成＋インデックス経由の並べ替えコピー）を省略し、末尾の余剰容量を切り詰めるだけの単純コピーにする**。`TrackCleaner.normalize`の`sortedIndices`が既に採用している同一パターンを踏襲した（既存コードベースに同等の実装がある、判定ラダー2）。単一ファイル・単一zipエントリの典型的な入力（元々時刻昇順）でボクシングオーバーヘッドを回避できる。
+4. **`TimelineRepository.buildPreparedImport`で`track.segments`を`TrackCleaner.clean()`呼び出し前に変数へ退避**し、以降`track`を参照しないよう変更。`track`パラメータが関数末尾まで参照され続けることによる（JIT最適化下での）GC対象化の遅延を避ける、副作用のない安全な変更。
+
+**見送った対策とその理由**
+
+- **`TimelineJsonParser.parseArrayElementSafely`の2度読み（`JsonParser.parseReader`→`toString()`→再パース）の解消**: 調査の結果、これは要素（1点/1セグメント）単位の一時オブジェクトであり、各要素の処理完了後に破棄される。130万要素分が同時に生存するわけではなく、持続的なメモリ増加の主因ではないと判断した（CPU/GC churnの増加要因ではあるが、本タスクの対象である「メモリ削減」の主因ではない）。D-004決定3（要素単位のエラー回復のための意図的な設計）を変更するほどの実質的な削減効果が見込めないため対応しない。
+- **`TrackCleaner`のパイプライン段数削減（`normalize`/`removeSpeedSpikes`/`suppressStationaryJitter`の統合）**: 上記のPointBuffer.trim()最適化により、実データでの実質的なコピー回数は既に大きく減っている。段を1つの関数に統合するには「除去判定（次点参照）」と「直前採用点基準の判定」を単一パスに組み込む必要があり、各段が個別に単体テストされている現状の設計（可読性・保守性）を崩すリスクがある一方、大規模な実データでの実測検証ができない本開発環境（実機・エミュレータ不在）ではこのリスクを正当化するだけの確実な追加効果を確認できなかった。AGENTS.md「効果が不確実、または大規模な設計変更が必要な場合は無理に実装せず」に従い見送り、バックログへ記録する。
+- **`groupPointsByLocalDate`のコピー無し（参照方式）への全面書き換え**、**`prepareImport`/`commitImport`の2フェーズ設計自体の変更（DB書き込みとクリーニングのストリーミング統合）**: いずれも指示が明示的に「無理に実装しない」対象として挙げた大規模な設計変更に該当する。前者は`DayGroup`を使う全呼び出し元（`PointBlobCodec.encode`・`writeDayRow`等）にオフセット+長さのビュー抽象化を波及させる必要があり、後者は上書き確認ダイアログ（D-006）の前提（書き込み前に全体を把握できること）と衝突する。バックログへ記録する。
+
+### 結果
+- `./gradlew testDebugUnitTest`・`./gradlew assembleDebug`ともに成功。
+- `TimelineRepositoryTest.kt`に`buildPreparedImport_largeScale560DayTrack_completesWithoutCrashAndPreservesAllPoints`を追加。560日・130万点規模の合成データ（速度スパイク・停留ジッタのいずれの閾値にも該当しないよう設計、全点が生き残る想定）を`TrackCleaner.clean`〜`groupPointsByLocalDate`のフルパイプラインへ通し、クラッシュしないこと・点の欠落や重複が無いこと（`pointCount`一致、`dayGroups`の合計点数一致）を確認した。JVMヒープ計測はCI環境依存で不安定になりやすいため、数値的なメモリ使用量アサーションは追加せず、正しさの検証に留めた（環境依存で不安定になりうる数値アサーションを避けるという指示に従った）。
+- `aapt dump badging`相当の確認として、マージ後のマニフェスト（`app/build/intermediates/merged_manifest/debug/.../AndroidManifest.xml`）に`android:largeHeap=true`相当の属性が反映されていることを確認した。
+
+### 次回開始位置
+- T-017（PeriodType.ALLの新設）。
+
 ## 2026-08-21 補足: subagent-doc-check.pyの既知の誤検知（T-015bコミット後）
 
 T-015bの実施内容・結果・次回開始位置は下記エントリに記録し、コミット`347a797`へ含めて提出済み。
