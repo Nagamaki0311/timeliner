@@ -62,6 +62,9 @@ D-017参照。期間切替のたびに選択期間の全`days`行を毎回全解
 ### 次回開始位置
 - T-014完了。T-015（560日規模の実データ対応: インポート進捗表示、S4）に着手する。D-017参照。
 
+### コミット
+- 本タスクの変更（新設`RouteOverview.kt`/`RouteOverviewTest.kt`・`TimelineRepository.kt`・`TimelineViewModel.kt`・`TimelineScreen.kt`・docs/tasks.md含む）はコミット済み（コミットハッシュ`a9f092f`、コミットメッセージ先頭行: `T-014: 概観点列(RouteOverview)を導入し期間切替の全期間展開を回避する(D-017)`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
+
 ## 2026-08-21 T-013b T-013レビュー指摘の修正（ズームバケット往復時のキャッシュ確定条件、PlaybackControllerの並行性テスト追加）
 
 ### 実施内容
