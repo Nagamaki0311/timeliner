@@ -8,6 +8,7 @@ import java.util.zip.ZipOutputStream
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -415,6 +416,80 @@ class TimelineJsonParserTest {
         assertEquals(1, track.pointCount)
         assertEquals(1, track.segments.size)
         assertEquals("ChIJ_TRUNCATED_RAWSIGNALS", track.segments[0].placeId)
+        assertEquals(35.6812, track.point(0).latitude, 1e-9)
+    }
+
+    // ---- レビュー指摘（docs/decisions.md D-015）に基づく境界値テスト ----
+
+    /**
+     * 既知キー（`semanticSegments`/`timelineObjects`/`locations`）が一つも現れないまま
+     * （＝`format`未確定のまま）ストリームが切り詰められた場合は、回収可能な有効データが
+     * 無いため従来通り例外が再送出されることを検証する（D-015決定3、救済条件`format != null`）。
+     */
+    @Test
+    fun parseJson_unknownKeyTruncatedBeforeAnyKnownKeyAppears_rethrowsException() {
+        val json = buildString {
+            append("""{"rawSignals": [""")
+            repeat(100) { i ->
+                if (i > 0) append(",")
+                append("{\"idx\":").append(i).append(",\"noise\":\"x\"}")
+            }
+            // 意図的に配列・オブジェクトを閉じない。
+        }
+
+        assertThrows(Exception::class.java) {
+            TimelineJsonParser.parseJson(json.byteInputStream())
+        }
+    }
+
+    /**
+     * 主要配列自身（`semanticSegments`）が2件目以降の要素で途中切り詰めになった場合、
+     * `format`は配列パース呼び出し前に確定済み・1件目は既に`builder`へ追加済みのため、
+     * 例外を投げずに1件目の有効なデータを保持したまま復旧することを検証する（D-015決定1・2）。
+     */
+    @Test
+    fun parseJson_semanticSegmentsTruncatedFromSecondElement_recoversFirstElementData() {
+        val json = """
+            {
+              "semanticSegments": [
+                {
+                  "startTime": "1700000000000",
+                  "endTime": "1700000001000",
+                  "visit": {
+                    "topCandidate": {
+                      "placeId": "ChIJ_FIRST_ELEMENT",
+                      "placeLocation": {"latLng": "35.6812°, 139.7671°"}
+                    }
+                  }
+                },
+                {
+                  "startTime": "1700000002000",
+                  "endTime": "1700000003000"
+        """.trimIndent()
+        // 2件目の要素・配列・ルートオブジェクトのいずれも閉じない（途中切り詰めを再現する）。
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1, track.segments.size)
+        assertEquals("ChIJ_FIRST_ELEMENT", track.segments[0].placeId)
+    }
+
+    /**
+     * ルートオブジェクトの閉じ`}`直前（次のキーがあるかどうかの境界）で切り詰められた場合、
+     * `while (reader.hasNext())`の条件式評価自体が例外を投げるが、この条件式もtryの内側に
+     * 含まれるため、既に確定していたデータを保持したまま例外を投げずに復旧することを検証する
+     * （D-015決定1）。
+     */
+    @Test
+    fun parseJson_truncatedRightAfterKnownKeyAtObjectCloseBoundary_recoversParsedData() {
+        val json = """{"locations": [{"latitudeE7": 356812000, "longitudeE7": 1397671000, "timestamp": "1700000000000"}]"""
+        // ルートオブジェクトを閉じる"}"を意図的に含めない。
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(0, track.segments.size)
         assertEquals(35.6812, track.point(0).latitude, 1e-9)
     }
 

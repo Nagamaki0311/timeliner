@@ -17,6 +17,27 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-011b T-011レビュー指摘の修正（保護範囲の見落とし2件、例外型の絞り込み）
+
+### 実施内容
+- D-015の決定に従い`TimelineJsonParser.parseRootObject`を修正した。
+  1. try/catchの範囲を`when`ブロックだけでなく`while (reader.hasNext())`の条件式評価を含むループ全体へ拡大した。
+  2. `format`の代入を、対応するキー名が判明した`when`の各分岐に入った直後（配列パース呼び出しの前）へ前倒しした。これにより、配列自身の2件目以降の要素で例外が発生しても1件目までの成果を「format確定済み」として回収できるようにした。
+  3. 回復可否の判定条件を`format != null`から`format != null && !builder.isEmpty()`へ変更した。`RawTrackBuilder`（`TimelineJsonParser.kt`内の非公開クラス）に`isEmpty()`（点0件かつセグメント0件を返す）を追加した。「キーは判明したが1件も読めなかった真の失敗」を誤って成功扱いしないための区別。
+  4. `catch (e: Exception)`を、D-014の実測で確認された2系統（`java.io.IOException`とそのサブクラス、`com.google.gson.JsonSyntaxException`）へ限定した（Kotlinはmulti-catch構文が無いため、2つの`catch`節から共通の`recoverRootObjectOrRethrow`ヘルパーを呼ぶ形にした）。それ以外の`RuntimeException`は握りつぶさず再送出する。
+- 対象ファイル: `app/src/main/java/com/nagamaki0311/timeliner/data/parser/TimelineJsonParser.kt`（`parseRootObject`・新設`recoverRootObjectOrRethrow`・`RawTrackBuilder.isEmpty()`）。`RawTrackBuilder`は当初依頼で`RawTrack.kt`にあると想定されていたが、実際には`TimelineJsonParser.kt`末尾の非公開クラスとして存在するため、そちらへ追加した。
+
+### 結果
+- `TimelineJsonParserTest.kt`にReviewer指摘の3種の境界値テストを追加した。
+  1. `parseJson_unknownKeyTruncatedBeforeAnyKnownKeyAppears_rethrowsException`: 既知キーが一つも現れないまま（`format`未確定のまま）`rawSignals`配列が切り詰められた場合、例外が再送出されることを確認。
+  2. `parseJson_semanticSegmentsTruncatedFromSecondElement_recoversFirstElementData`: `semanticSegments`配列自身が2件目の要素で途中切り詰めになった場合、1件目の有効データ（点1件・セグメント1件・`placeId`一致）を保持したまま例外を投げずに復旧することを確認。
+  3. `parseJson_truncatedRightAfterKnownKeyAtObjectCloseBoundary_recoversParsedData`: `locations`配列を読み終えた直後、ルートオブジェクトの閉じ`}`が無いままストリームが終わる（次のキー確認`hasNext()`自体が例外を投げる）場合も、既に確定していた点1件を保持したまま復旧することを確認。
+- `./gradlew testDebugUnitTest`成功（新規3件含め全件パス）。
+- `./gradlew assembleDebug`成功。
+
+### 次回開始位置
+- 特になし。T-011b完了、T-011を完了へ戻す。
+
 ## 2026-08-21 T-011 実機報告対応: rawSignals読み飛ばし失敗でインポート全体が失敗する不具合を修正
 
 ### 実施内容

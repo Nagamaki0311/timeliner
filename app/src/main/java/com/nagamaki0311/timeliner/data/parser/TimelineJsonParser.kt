@@ -2,11 +2,13 @@ package com.nagamaki0311.timeliner.data.parser
 
 import android.util.Log
 import com.google.gson.JsonParser
+import com.google.gson.JsonSyntaxException
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import com.nagamaki0311.timeliner.model.RawTrack
 import com.nagamaki0311.timeliner.model.TimelineSegment
 import com.nagamaki0311.timeliner.model.TimelineSegmentType
+import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.StringReader
@@ -176,48 +178,65 @@ object TimelineJsonParser {
     private fun parseRootObject(reader: JsonReader, builder: RawTrackBuilder): TimelineFormat {
         reader.beginObject()
         var format: TimelineFormat? = null
-        while (reader.hasNext()) {
-            try {
+        // while条件（hasNext()）自体もtryの内側に含める。あるキーの処理が成功しformatが確定した
+        // 直後の「次のキー名確認」自体が例外を投げるケースも保護対象に含める必要があるため
+        // （docs/decisions.md D-015決定1）。
+        try {
+            while (reader.hasNext()) {
                 when (reader.nextName()) {
                     "semanticSegments" -> {
-                        parseDeviceTimelineArray(reader, builder)
+                        // 対応するキーが判明した時点でformatを確定させる（配列パース呼び出しの前）。
+                        // 配列自身の2件目以降の要素で例外が発生しても、1件目までの成果を
+                        // 「format確定済み」として回収できるようにするため（docs/decisions.md D-015決定2）。
                         format = TimelineFormat.DEVICE_TIMELINE_ANDROID
+                        parseDeviceTimelineArray(reader, builder)
                     }
                     "timelineObjects" -> {
-                        parseTimelineObjectsArray(reader, builder)
                         format = TimelineFormat.TAKEOUT_SEMANTIC_LOCATION_HISTORY
+                        parseTimelineObjectsArray(reader, builder)
                     }
                     "locations" -> {
-                        parseRecordsArray(reader, builder)
                         format = TimelineFormat.TAKEOUT_RECORDS
+                        parseRecordsArray(reader, builder)
                     }
                     // rawSignals/userLocationProfile等の兄弟キーはv1スコープ外（docs/decisions.md D-002参照）。
                     else -> reader.skipValue()
                 }
-            } catch (e: Exception) {
-                // rawSignals等の巨大な兄弟キーの読み飛ばし中にストリームが途中で終わっている等の理由で
-                // 例外が起きても、既にsemanticSegments/timelineObjects/locationsのいずれかから有効な
-                // データを読み終えていれば（=formatが確定していれば）、そのデータを失わずインポートを
-                // 完了する（docs/decisions.md D-014参照）。formatが未確定の場合は回復可能なデータが
-                // 無いため、従来通り例外を投げる。
-                val recoveredFormat = format
-                if (recoveredFormat != null) {
-                    // 注意: この時点でreaderのストリーム位置は壊れており、hasNext()/endObject()等の
-                    // 以降の呼び出しも同じ例外を再送出する（実測確認済み）。readerへは以降触れず、
-                    // 収集済みのbuilderデータのみを使って即座に返す。
-                    Log.w(
-                        TAG,
-                        "ルートオブジェクトのフィールド読み込み中にエラーが発生しましたが、" +
-                            "既に${recoveredFormat}形式の有効なデータを取得済みのため、そのままインポートを完了します: ${e.message}",
-                        e
-                    )
-                    return recoveredFormat
-                }
-                throw e
             }
+        } catch (e: IOException) {
+            return recoverRootObjectOrRethrow(e, format, builder)
+        } catch (e: JsonSyntaxException) {
+            return recoverRootObjectOrRethrow(e, format, builder)
         }
         reader.endObject()
         return format ?: throw IllegalArgumentException("既知のタイムラインJSON形式と一致しませんでした")
+    }
+
+    /**
+     * ルートオブジェクト走査中にストリーム破損由来の例外（`IOException`系/`JsonSyntaxException`）が
+     * 発生した際、既に主要キーから有効なデータを1件以上読み終えていれば（=`format`確定かつ
+     * `builder`が空でなければ）そのデータを保持したまま復旧する（docs/decisions.md D-015決定3）。
+     * `format`は判明したが1件もデータを読めなかった場合（真の失敗）は救済せず再送出する。
+     *
+     * 注意: 呼び出し時点で`reader`のストリーム位置は壊れており、`hasNext()`/`endObject()`等の
+     * 以降の呼び出しも同じ例外を再送出する（実測確認済み、docs/decisions.md D-014決定4）。
+     * `reader`へは以降一切触れず、収集済みの`builder`データのみを使って即座に返す。
+     */
+    private fun recoverRootObjectOrRethrow(
+        e: Exception,
+        format: TimelineFormat?,
+        builder: RawTrackBuilder
+    ): TimelineFormat {
+        if (format != null && !builder.isEmpty()) {
+            Log.w(
+                TAG,
+                "ルートオブジェクトのフィールド読み込み中にエラーが発生しましたが、" +
+                    "既に${format}形式の有効なデータを取得済みのため、そのままインポートを完了します: ${e.message}",
+                e
+            )
+            return format
+        }
+        throw e
     }
 
     // ---- 形式A/B: 端末内Timeline(Android/iOS) ----
@@ -709,6 +728,9 @@ private class RawTrackBuilder {
     fun addSegment(segment: TimelineSegment) {
         segments.add(segment)
     }
+
+    /** 点0件かつセグメント0件（=まだ何も有効なデータを取得していない）かどうかを返す。 */
+    fun isEmpty(): Boolean = size == 0 && segments.isEmpty()
 
     private fun grow() {
         val newCapacity = latitudes.size * 2
