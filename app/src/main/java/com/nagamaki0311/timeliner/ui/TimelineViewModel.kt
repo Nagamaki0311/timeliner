@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.maplibre.android.maps.MapLibreMap
 import java.io.File
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
@@ -37,7 +38,18 @@ import java.time.temporal.ChronoUnit
 /** [ImportScreen]が表示するインポート処理の状態。 */
 sealed interface ImportUiState {
     data object Idle : ImportUiState
-    data object InProgress : ImportUiState
+
+    /**
+     * パース処理中の進捗（docs/tasks.md T-015）。パーサ（`TimelineJsonParser.parseJson`/`parseZip`）
+     * は総サイズ・総行数を事前に知らないストリーミング走査のため正確な割合は出せず、代わりに
+     * 「これまでに読み取った点数」「これまでに見つかった日付範囲」を表示してユーザーが進行を確認できるようにする。
+     * コールバックがまだ一度も呼ばれていない開始直後は既定値（[pointCount]=0、日付=null）のまま。
+     */
+    data class InProgress(
+        val pointCount: Int = 0,
+        val earliestDate: String? = null,
+        val latestDate: String? = null
+    ) : ImportUiState
 
     /**
      * 書き込み対象日付のうち[overwriteDayCount]日分が既存`days`行を上書きすることをユーザーへ確認する状態
@@ -289,12 +301,21 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      * [ImportUiState.ConfirmOverwrite]を表示し、[confirmOverwrite]が呼ばれるまで書き込みを保留する。
      */
     fun importFrom(context: Context, uri: Uri) {
-        _importState.value = ImportUiState.InProgress
+        _importState.value = ImportUiState.InProgress()
         val appContext = context.applicationContext
         viewModelScope.launch {
             try {
                 val prepared = withContext(Dispatchers.IO) {
-                    val rawTrack = ImportSource.readRawTrack(appContext, uri)
+                    val rawTrack = ImportSource.readRawTrack(appContext, uri) { pointCount, earliestMillis, latestMillis ->
+                        // パーサ内のバックグラウンドスレッド（Dispatchers.IO）から呼ばれるが、
+                        // MutableStateFlow.valueへの代入はスレッドセーフなため問題ない
+                        // （collectAsStateWithLifecycleが安全にMainへ届ける）。
+                        _importState.value = ImportUiState.InProgress(
+                            pointCount = pointCount,
+                            earliestDate = millisToDateString(earliestMillis),
+                            latestDate = millisToDateString(latestMillis)
+                        )
+                    }
                     repository.prepareImport(rawTrack)
                 }
                 if (prepared.overwriteDayCount > 0) {
@@ -315,7 +336,7 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     fun confirmOverwrite() {
         val prepared = pendingImport ?: return
         pendingImport = null
-        _importState.value = ImportUiState.InProgress
+        _importState.value = ImportUiState.InProgress()
         viewModelScope.launch {
             commitPreparedImport(prepared)
         }
@@ -326,6 +347,10 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         pendingImport = null
         _importState.value = ImportUiState.Idle
     }
+
+    /** ミリ秒タイムスタンプを端末のデフォルトタイムゾーンで`YYYY-MM-DD`へ変換する（[ImportUiState.InProgress]表示用）。 */
+    private fun millisToDateString(millis: Long): String =
+        Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
 
     private suspend fun commitPreparedImport(prepared: TimelineRepository.PreparedImport) {
         try {

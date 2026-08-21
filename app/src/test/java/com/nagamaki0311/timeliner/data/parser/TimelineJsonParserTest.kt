@@ -23,6 +23,10 @@ import org.junit.Test
  */
 class TimelineJsonParserTest {
 
+    companion object {
+        private const val BASE_TIMESTAMP_MILLIS = 1_700_000_000_000L
+    }
+
     // ---- isTargetZipEntry（zipエントリのパス判定） ----
 
     @Test
@@ -636,6 +640,74 @@ class TimelineJsonParserTest {
         assertEquals(2, track.pointCount)
         assertEquals(1_000_000_000L, track.timestampsMillis[0])
         assertEquals(3_000_000_000L, track.timestampsMillis[1])
+    }
+
+    // ---- 進捗コールバック（docs/tasks.md T-015） ----
+
+    /**
+     * `onProgress`が最終的に一度以上呼ばれ、`pointCount`が単調増加し常に最終`track.pointCount`以下
+     * であること、通知される最古タイムスタンプは（時刻昇順データのため）常に先頭点の時刻と一致し、
+     * 通知される最新タイムスタンプはその時点までの点の範囲内に収まることを検証する。
+     * 間引きにより、最後の通知が必ずしも最終点そのものを指すとは限らない（docs/tasks.md T-015、
+     * 完了自体は[ImportUiState.Success]側で別途通知されるため、進捗表示としてはこれで十分）。
+     */
+    @Test
+    fun parseJson_onProgressCallback_reportsMonotonicPointCountAndTimestampRange() {
+        val pointCount = 20_000
+        val json = buildRecordsJson(pointCount)
+        val reportedPointCounts = mutableListOf<Int>()
+        var lastEarliest = Long.MIN_VALUE
+        var lastLatest = Long.MIN_VALUE
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream()) { count, earliest, latest ->
+            reportedPointCounts.add(count)
+            lastEarliest = earliest
+            lastLatest = latest
+        }
+
+        assertEquals(pointCount, track.pointCount)
+        assertTrue("onProgressが少なくとも1回は呼ばれること", reportedPointCounts.isNotEmpty())
+        assertEquals(reportedPointCounts.sorted(), reportedPointCounts)
+        assertTrue(reportedPointCounts.last() <= pointCount)
+        assertTrue(lastEarliest <= lastLatest)
+        assertEquals(BASE_TIMESTAMP_MILLIS, lastEarliest)
+        assertEquals(BASE_TIMESTAMP_MILLIS + (reportedPointCounts.last() - 1) * 1000L, lastLatest)
+    }
+
+    /**
+     * `onProgress`の呼び出し回数が点数の増分（内部の間引き閾値）で間引かれ、
+     * 全点ごとに呼ばれることはない（過剰なオーバーヘッドにならない）ことを検証する（D-017 T-015）。
+     */
+    @Test
+    fun parseJson_onProgressCallback_isThrottledAndNotCalledPerPoint() {
+        val pointCount = 50_000
+        val json = buildRecordsJson(pointCount)
+        var callCount = 0
+
+        TimelineJsonParser.parseJson(json.byteInputStream()) { _, _, _ -> callCount++ }
+
+        // 点数ベースの間引き閾値が概ね機能していれば、呼び出し回数は点数よりはるかに少ない。
+        assertTrue("callCount=$callCount は点数に対して間引かれているはず", callCount < pointCount / 100)
+        assertTrue("onProgressが少なくとも1回は呼ばれること", callCount > 0)
+    }
+
+    /** `onProgress`を渡さない（既定null）場合、従来通り例外なくパースできることを検証する。 */
+    @Test
+    fun parseJson_onProgressOmitted_parsesSuccessfullyWithoutCallback() {
+        val json = buildRecordsJson(10)
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(10, track.pointCount)
+    }
+
+    private fun buildRecordsJson(pointCount: Int): String {
+        val locations = (0 until pointCount).joinToString(",") { i ->
+            val lat = 350000000L + i
+            val timestamp = BASE_TIMESTAMP_MILLIS + i * 1000L
+            "{\"latitudeE7\": $lat, \"longitudeE7\": 1390000000, \"timestamp\": \"$timestamp\"}"
+        }
+        return "{\"locations\": [$locations]}"
     }
 
     private fun buildZip(entries: List<Pair<String, String>>): ByteArray {

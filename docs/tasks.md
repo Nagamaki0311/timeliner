@@ -41,7 +41,7 @@
 | T-013b | T-013レビュー指摘の修正（ズームバケット往復時のキャッシュ確定条件、PlaybackControllerの並行性テスト追加） | 中 | 完了 | developer | D-019参照。RouteOverlayView.scheduleSimplifyのコミット直前に現在のズームバケットを再取得し、対象zoomBucketと不一致ならスキップするよう修正。PlaybackControllerTest.ktを新設し、runBlocking+launchのみ（新規依存なし）でsetRoute/setSpeedModeの並行呼び出しの最終状態を検証 |
 | T-014 | 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3） | 高 | 完了 | developer | D-017参照。RouteOverviewを新設し日ごとに小予算DP（既定128点/日）した点列をストリーミングで結合。TimelineRepositoryにqueryDayDates/queryDateRange/queryDaysStreamingを追加。TimelineViewModel.loadRouteを短期間（7日以下）はqueryDays、長期間はRouteOverviewからの二分探索切り出しへ分岐、fitBounds用bboxもRouteOverview.boundsForDateRangeを再利用。詳細はdocs/progress.md参照 |
 | T-014b | T-014レビュー指摘の修正（RouteOverviewキャッシュの並行性テスト欠如、無効化時の未キャンセルJob、未使用メソッド） | 高 | 完了 | developer | D-020参照。世代ガード付きキャッシュロジックをTimelineViewModelからRouteOverviewCache（DB非依存）へ切り出しRouteOverviewCacheTestで検証、invalidate()がbuildJob.cancel()を呼ぶよう修正、未使用のTimelineRepository.queryDayDates()を削除。詳細はdocs/progress.md参照 |
-| T-015 | 560日規模の実データ対応: インポート進捗表示（S4） | 高 | 未着手 | developer | D-017参照。要件「読み込み完了をユーザーが明確に確認できる」に対応 |
+| T-015 | 560日規模の実データ対応: インポート進捗表示（S4） | 高 | 完了 | developer | D-017参照。要件「読み込み完了をユーザーが明確に確認できる」に対応。TimelineJsonParser.parseJson/parseZipに間引き付きonProgressコールバックを追加し、ImportUiState.InProgressをdata class化してImportScreenへ点数・日付範囲を表示 |
 | T-016 | 560日規模の実データ対応: インポート時のメモリ削減（S5） | 中 | 未着手 | developer | D-017参照 |
 | T-017 | 560日規模の実データ対応: 全期間の期間種別（S6） | 中 | 未着手 | developer | D-017参照。PeriodType.ALLの新設、D-017決定1（既定を全期間にする） |
 | T-018 | 560日規模の実データ対応: 再生時間選択肢の変更（S7） | 中 | 未着手 | developer | D-017参照。30/60/120/180/300秒、既定60秒へ変更。D-017決定2（全期間選択時は手動モード無効化） |

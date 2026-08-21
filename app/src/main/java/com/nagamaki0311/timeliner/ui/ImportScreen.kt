@@ -64,7 +64,11 @@ fun ImportScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
             }
             is ImportUiState.InProgress -> {
                 CircularProgressIndicator()
-                Text("インポート中…")
+                if (current.pointCount > 0) {
+                    Text("読み込み中… 現在${current.pointCount}件（${current.earliestDate ?: "-"} 〜 ${current.latestDate ?: "-"}）")
+                } else {
+                    Text("インポート中…")
+                }
             }
             is ImportUiState.ConfirmOverwrite -> {
                 Text("確認待ち…")

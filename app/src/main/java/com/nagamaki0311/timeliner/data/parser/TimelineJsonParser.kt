@@ -35,9 +35,18 @@ object TimelineJsonParser {
 
     private const val TAG = "TimelineJsonParser"
 
-    /** 単体の`.json`ファイルをパースする。 */
-    fun parseJson(input: InputStream): RawTrack {
-        val builder = RawTrackBuilder()
+    /**
+     * 単体の`.json`ファイルをパースする。
+     *
+     * [onProgress]は、ストリーミング走査中にこれまで読み取った点数・タイムスタンプ範囲を
+     * 間引いて通知する任意コールバック（560日規模・数百万点のファイルでUIへ進捗表示するため、
+     * docs/tasks.md T-015）。`null`（既定）なら一切呼ばれない。
+     */
+    fun parseJson(
+        input: InputStream,
+        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null
+    ): RawTrack {
+        val builder = RawTrackBuilder(onProgress)
         JsonReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
             parseRoot(reader, builder)
         }
@@ -53,9 +62,16 @@ object TimelineJsonParser {
      * 場合のみ読み込む）。判定にはzip全体のエントリ種別を先に把握する必要があるため、
      * [openInput]（同一内容を指す新しい[InputStream]を返す関数）を2回呼び出して2パスで走査する
      * （`ZipInputStream`は巻き戻せないため。zip内容全体をメモリへ読み込むことは避ける）。
+     *
+     * [onProgress]は[parseJson]と同様の進捗コールバック（docs/tasks.md T-015）。エントリをまたいでも
+     * 同一の[RawTrackBuilder]が状態（点数の累積・間引き済み前回通知時刻）を保持するため自然に連続した
+     * 進捗として通知される。
      */
-    fun parseZip(openInput: () -> InputStream): RawTrack {
-        val builder = RawTrackBuilder()
+    fun parseZip(
+        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null,
+        openInput: () -> InputStream
+    ): RawTrack {
+        val builder = RawTrackBuilder(onProgress)
         val hasSemanticEntry = scanForSemanticLocationHistoryEntry(openInput)
         openInput().use { input ->
             ZipInputStream(input).use { zip ->
@@ -707,13 +723,26 @@ object TimelineJsonParser {
  *
  * [build]は複数データ源の結合順・zip格納順が時系列と一致しない場合に備え、
  * 全点を時刻昇順に安定ソートしてから[RawTrack]を返す（docs/decisions.md D-004参照）。
+ *
+ * [onProgress]は進捗表示用コールバック（docs/tasks.md T-015）。[addPoint]のたびに毎回呼ぶと
+ * 560万点規模でオーバーヘッドになるため、点数の増分または経過時間のいずれかが一定量に達した
+ * 場合のみ間引いて呼ぶ（[maybeReportProgress]）。ここで通知する最古/最新タイムスタンプは
+ * これまでに追加された点の中の最小/最大値であり、[build]が返す最終ソート結果とは挿入順次第で
+ * 厳密には一致しない場合があるが、ユーザー向けの途中経過表示としては十分（過度な精度は不要）。
  */
-private class RawTrackBuilder {
+private class RawTrackBuilder(
+    private val onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null
+) {
     private var latitudes = DoubleArray(INITIAL_CAPACITY)
     private var longitudes = DoubleArray(INITIAL_CAPACITY)
     private var timestamps = LongArray(INITIAL_CAPACITY)
     private var size = 0
     private val segments = mutableListOf<TimelineSegment>()
+
+    private var earliestTimestampMillis = Long.MAX_VALUE
+    private var latestTimestampMillis = Long.MIN_VALUE
+    private var lastProgressPointCount = 0
+    private var lastProgressTimeMillis = 0L
 
     fun addPoint(latitude: Double, longitude: Double, timestampMillis: Long) {
         if (size == latitudes.size) {
@@ -723,6 +752,23 @@ private class RawTrackBuilder {
         longitudes[size] = longitude
         timestamps[size] = timestampMillis
         size++
+        if (timestampMillis < earliestTimestampMillis) earliestTimestampMillis = timestampMillis
+        if (timestampMillis > latestTimestampMillis) latestTimestampMillis = timestampMillis
+        maybeReportProgress()
+    }
+
+    private fun maybeReportProgress() {
+        val callback = onProgress ?: return
+        val now = System.currentTimeMillis()
+        val pointsSinceLastReport = size - lastProgressPointCount
+        if (pointsSinceLastReport < PROGRESS_POINT_INTERVAL &&
+            now - lastProgressTimeMillis < PROGRESS_TIME_INTERVAL_MILLIS
+        ) {
+            return
+        }
+        lastProgressPointCount = size
+        lastProgressTimeMillis = now
+        callback(size, earliestTimestampMillis, latestTimestampMillis)
     }
 
     fun addSegment(segment: TimelineSegment) {
@@ -760,5 +806,11 @@ private class RawTrackBuilder {
 
     companion object {
         private const val INITIAL_CAPACITY = 64
+
+        /** [maybeReportProgress]の間引き閾値: 点数がこの数だけ増えるごとに通知する（docs/tasks.md T-015）。 */
+        private const val PROGRESS_POINT_INTERVAL = 3000
+
+        /** [maybeReportProgress]の間引き閾値: 前回通知からこの時間（ミリ秒）経過したら通知する。 */
+        private const val PROGRESS_TIME_INTERVAL_MILLIS = 150L
     }
 }

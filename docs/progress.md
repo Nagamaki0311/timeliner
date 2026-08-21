@@ -17,6 +17,26 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-015 560日規模の実データ対応: インポート進捗表示（S4）
+
+### 実施内容
+D-017参照。ユーザー要件「読み込み完了をユーザーが明確に確認できるよう、件数・期間などの進捗を表示する」に対応した。パーサはストリーミング走査でファイル全体のサイズ・総行数を事前に知らないため正確なパーセンテージは出せない方針とし、「これまでに読み取った点数」「これまでに見つかった最古/最新日付」を逐次表示する方式にした。
+
+1. **`TimelineJsonParser.kt`**: `parseJson`/`parseZip`に任意の進捗コールバック`onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null`を追加（既定`null`で既存呼び出し元は無変更で動作）。内部`RawTrackBuilder`に`onProgress`をコンストラクタで渡し、`addPoint`のたびに毎回呼ぶ代わりに`maybeReportProgress`で間引く（点数が3000件増える、または前回通知から150ms経過のいずれかで通知、`System.currentTimeMillis()`による単純な方式）。`RawTrackBuilder`は追加のたび最小/最大タイムスタンプを追跡し、これを進捗値として通知する（`build()`の最終ソート結果と挿入順次第で厳密には一致しない場合があるが、進捗表示用途としては十分と判断、要件のガイダンス通り）。`parseZip`はエントリをまたいでも同一`builder`インスタンスを使い回すため、点数・最小/最大タイムスタンプは自然に累積される。
+   - `parseZip`の引数順序を`(onProgress = null, openInput)`（`openInput`を末尾）に変更する必要があった。既存テスト（`TimelineJsonParserTest`）は`TimelineJsonParser.parseZip { ByteArrayInputStream(zipBytes) }`という末尾ラムダ構文で呼んでおり、Kotlinの末尾ラムダは常に最後の仮引数へ結び付くため、`onProgress`を末尾にすると型不一致でコンパイルエラーになった（実際に一度そのエラーで検出・修正した）。
+2. **`ImportSource.kt`**: `readRawTrack`に同様の`onProgress`引数を追加し、`parseJson`/`parseZip`へそのまま橋渡し。呼び出し側も`parseZip(onProgress, opener)`の順に修正。
+3. **`TimelineViewModel.kt`**: `ImportUiState.InProgress`を`data object`から`data class InProgress(val pointCount: Int = 0, val earliestDate: String? = null, val latestDate: String? = null)`へ変更。`importFrom`内の`ImportSource.readRawTrack`呼び出しに進捗コールバックを渡し、呼ばれるたびに`_importState.value`を更新（`Dispatchers.IO`上のバックグラウンドスレッドからの`MutableStateFlow.value`代入だがスレッドセーフなため問題ない）。ミリ秒→`YYYY-MM-DD`変換用に`millisToDateString`（`java.time.Instant`+`ZoneId.systemDefault()`）を追加。`confirmOverwrite`の`ImportUiState.InProgress`代入も`InProgress()`（引数なし＝既定値）へ変更。
+4. **`ImportScreen.kt`**: `InProgress`分岐で`pointCount > 0`なら「読み込み中… 現在${pointCount}件（${earliestDate} 〜 ${latestDate}）」、まだコールバックが一度も呼ばれていない（`pointCount == 0`）間は従来通り「インポート中…」を表示。
+
+### 結果
+- `TimelineJsonParserTest.kt`に進捗コールバックのテスト3件を追加（`parseJson_onProgressCallback_reportsMonotonicPointCountAndTimestampRange`＝20,000点合成データで最終点数以下・単調増加・最古タイムスタンプが常に先頭点と一致することを検証、`parseJson_onProgressCallback_isThrottledAndNotCalledPerPoint`＝50,000点合成データで呼び出し回数が点数の1/100未満に間引かれていることを検証、`parseJson_onProgressOmitted_parsesSuccessfullyWithoutCallback`＝コールバック省略時の後方互換性を検証）。
+  - 最初、最後の通知の`pointCount`/`latestDate`が最終値と厳密一致することを検証するテストを書いたが、間引きにより最後の通知が必ずしも最終点そのものを指すとは限らない（完了自体は別途`ImportUiState.Success`で通知されるため仕様上問題ない）ため、単調性・上限のみを検証する内容へ修正した。
+- `./gradlew testDebugUnitTest`（162件全て成功）、`./gradlew assembleDebug`ともに成功を確認。
+- 既存の`ImportUiState.InProgress`参照箇所（`ImportScreen.kt`の`state !is ImportUiState.InProgress`型チェック等）はdata class化しても壊れないことを確認済み。
+
+### 次回開始位置
+- T-016（560日規模の実データ対応: インポート時のメモリ削減、S5）に着手。
+
 ## 2026-08-21 補足: subagent-doc-check.ktフックの既知の誤検知（T-014bコミット後）
 
 T-014bの実施内容・結果・次回開始位置は下記エントリに記録し、コミット`ad0bf03`へ含めて提出済み。

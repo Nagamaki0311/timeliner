@@ -22,14 +22,22 @@ object ImportSource {
     private const val ZIP_MAGIC_BYTE_0 = 0x50.toByte() // 'P'
     private const val ZIP_MAGIC_BYTE_1 = 0x4B.toByte() // 'K'
 
-    /** [uri]の内容を判別してパースし、[RawTrack]へ正規化する。 */
-    fun readRawTrack(context: Context, uri: Uri): RawTrack {
+    /**
+     * [uri]の内容を判別してパースし、[RawTrack]へ正規化する。
+     * [onProgress]は[TimelineJsonParser.parseJson]/[TimelineJsonParser.parseZip]へそのまま橋渡しする
+     * 進捗コールバック（docs/tasks.md T-015）。
+     */
+    fun readRawTrack(
+        context: Context,
+        uri: Uri,
+        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null
+    ): RawTrack {
         val resolver = context.contentResolver
         val opener: () -> InputStream = { openOrThrow(resolver, uri) }
         return if (isZip(uri, opener)) {
-            TimelineJsonParser.parseZip(opener)
+            TimelineJsonParser.parseZip(onProgress, opener)
         } else {
-            opener().use { TimelineJsonParser.parseJson(it) }
+            opener().use { TimelineJsonParser.parseJson(it, onProgress) }
         }
     }
 
