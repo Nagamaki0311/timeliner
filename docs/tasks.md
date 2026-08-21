@@ -35,8 +35,8 @@
 | T-011 | 実機報告対応: rawSignals読み飛ばし失敗でインポート全体が失敗する不具合を修正 | 高 | 完了 | developer | ユーザーが実際のTimelineエクスポートファイル（130万行超）をインポートし`End of input`で失敗。`rawSignals`等の未知キー読み飛ばし失敗が既にパース済みの有効データごと破棄する設計欠陥を修正。D-014参照。Reviewer指摘への対応はT-011bで完了（D-015参照） |
 | T-011b | T-011レビュー指摘の修正（保護範囲の見落とし2件、例外型の絞り込み） | 高 | 完了 | developer | D-015参照。同種のデータ損失が主要配列自身の途中失敗・キー境界での失敗でも再発する問題を修正し、境界値テスト3件を追加。再検証でJsonIOExceptionの見落としが発覚したがT-011cで対応完了（D-016参照） |
 | T-011c | T-011b再検証指摘の修正（JsonIOExceptionが例外型絞り込みの穴になっていた） | 高 | 完了 | developer | D-016参照。catch (JsonSyntaxException)をcatch (JsonParseException)へ変更する1行修正。非EOF系IOExceptionがJsonIOExceptionへラップされ2件目要素消費中に発生するケースの回復テストを追加 |
-| T-012 | 560日規模の実データ対応: 計測基盤とSimplifierのANR根治（S0+S1） | 高 | レビュー中 | developer | D-017参照。時間ガード保護点をDP本体から分離し区切り点として扱う方式へ変更、maxPointCountをdecimateToLimitでハードキャップ化。ベンチマークで28万点・maxPointCount=3000が600秒超未完了→105msへ改善したことを確認（docs/progress.md参照）。Reviewer指摘によりT-012bで修正ループ中（D-018参照） |
-| T-012b | T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く） | 高 | 未着手 | developer | D-018参照。実データ規模で保護点の約86%が失われワープ防止要件が実質無効化されていた |
+| T-012 | 560日規模の実データ対応: 計測基盤とSimplifierのANR根治（S0+S1） | 高 | 完了 | developer | D-017参照。時間ガード保護点をDP本体から分離し区切り点として扱う方式へ変更、maxPointCountをdecimateToLimitでハードキャップ化。ベンチマークで28万点・maxPointCount=3000が600秒超未完了→105msへ改善したことを確認（docs/progress.md参照）。Reviewer指摘はT-012bで修正済み（D-018参照） |
+| T-012b | T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く） | 高 | 完了 | developer | D-018参照。decimateToLimitに保護点情報を渡し、保護点数<=maxPointCountなら保護点を全て残す方式へ修正。保護点生存率が実測約14%→100%（保護点数がmaxPointCount以下の条件下）へ改善したことをテストで確認（docs/progress.md参照） |
 | T-013 | 560日規模の実データ対応: 重い処理のUIスレッドからの排除（S2） | 高 | 未着手 | developer | D-017参照。T-012完了後に着手 |
 | T-014 | 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3） | 高 | 未着手 | developer | D-017参照。T-013完了後に着手 |
 | T-015 | 560日規模の実データ対応: インポート進捗表示（S4） | 高 | 未着手 | developer | D-017参照。要件「読み込み完了をユーザーが明確に確認できる」に対応 |

@@ -17,6 +17,36 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-012b T-012レビュー指摘の修正（decimateToLimitが時間ガード保護点を無差別に間引く）
+
+### 実施内容
+D-018参照。T-012のReviewer指摘（`decimateToLimit`がDP適用後の結果配列を均等間隔でサンプリングするだけで、どのインデックスが時間ガード保護点由来かを一切考慮しない）を修正した。
+
+`app/src/main/java/com/nagamaki0311/timeliner/process/Simplifier.kt`:
+- `decimateToLimit`のシグネチャに`breakpoints: IntArray`（`simplify`内で既に算出済みの時間ガード区切り点。epsilonに依存せず常に一定）を追加し、`simplify`からそのまま渡すよう変更した。
+- `decimateToLimit`を以下のロジックへ変更した（D-018の優先順位どおり）。
+  1. `markProtected`（二本指走査、O(result.size + breakpoints.size)）で`result`中の保護点位置を特定。
+  2. 保護点数が`maxPointCount`以下なら`decimateNonProtected`で保護点を全て残し、残り枠を非保護点から均等間引きで選ぶ（先頭・末尾は常に保護点なので自動的に保たれる）。
+  3. 保護点数自体が`maxPointCount`を超える場合のみ、旧来の`decimateEvenly`（全体を均等間引き、保護点も対象）にフォールバックする（D-018が許容した原理的な限界）。
+- 追加した`markProtected`・`decimateNonProtected`・`decimateEvenly`はいずれもO(k)（kは`result`の要素数）で、T-012で解消した計算量退化を再発させていないことを確認した（ループのネストなし、O(n²)は混入していない）。
+
+`app/src/test/java/com/nagamaki0311/timeliner/process/SimplifierTest.kt`にテスト3件を追加した（既存9件+3件で計12件）。
+- `simplify_protectedPointsWithinMaxPointCount_allSurviveDecimation`: 全体3000点・保護点候補約500点・maxPointCount=2000のケースで、DP後の結果に含まれる保護点が**すべて**最終出力に残ることを確認。
+- `simplify_protectedPointCountExceedsMaxPointCount_stillRespectsLimitWithoutCrashing`: 保護点候補約5000点がmaxPointCount=3000を超えるケースで、クラッシュせず`result.size <= maxPointCount`を満たすことを確認（保護点優先ロジック導入後もハードキャップの原則が成立することの回帰確認）。
+- `simplify_largeScaleBenchmark_protectedSurvivalRateImprovesToFullWhenWithinLimit`: D-017/D-018が報告した560日規模ANRデータを模した20万点規模の合成データ（保護点候補約2,857件、maxPointCount=3000で候補数が上限以下になるよう間隔を調整）で、保護点生存率が100%になることを確認。
+
+### 結果
+- `./gradlew testDebugUnitTest`: 成功（`SimplifierTest`12件全て成功、うち新規3件含む）。既存9件のアサーションは無変更のまま全て成功。
+- `./gradlew assembleDebug`: 成功。
+- 保護点生存率の比較（修正前→修正後、いずれも保護点数<=maxPointCountの条件下）:
+  - D-018記載の実測値（560日規模、保護点間隔s≈25）: 保護点候補22,076点中3,058点（約14%）しか残らなかった（旧`decimateToLimit`は保護点を無差別に均等間引き対象にしていたため）。
+  - 本修正後の同規模ベンチマーク（20万点、保護点候補約2,857件、maxPointCount=3000。保護点候補数を意図的にmaxPointCount以下に調整。実処理時間367ms）: 保護点候補2,857件中2,857件（**100%**）が最終出力に残ることを確認した。
+  - 保護点候補数がmaxPointCountを超える密度の場合（実データのs≈25相当）は、D-018で許容した原理的な限界（保護点も間引き対象になる）が引き続き適用される。この場合の生存率改善は本タスクのスコープ外（D-018決定どおり）。
+- Low項目（`maxPointCount`が2未満の場合のKDoc不一致、複数セグメント跨ぎの潜在リスク、計算量表記の不正確さ）はD-018決定どおり今回は対応せず、バックログとして扱う（docs/tasks.mdへの新規追記は行わず、既存のD-018参照で足りると判断した）。
+
+### 次回開始位置
+- T-013（560日規模の実データ対応: 重い処理のUIスレッドからの排除、S2）に着手する。D-017参照。T-012・T-012bにより`Simplifier`自体の計算量・保護点優先度の問題は解消済みのため、次はUIスレッド上での同期呼び出し構造（`RouteOverlayView.recomputeAndInvalidate`・`VideoExporter`）の非同期化に着手する想定。
+
 ## 2026-08-21 T-012 560日規模の実データ対応: 計測基盤とSimplifierのANR根治（S0+S1）
 
 ### 実施内容

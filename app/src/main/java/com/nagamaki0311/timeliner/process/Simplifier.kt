@@ -22,8 +22,9 @@ object Simplifier {
      * @param epsilonMeters Douglas-Peuckerの許容偏差（メートル）。
      * @param timeGuardMillis この時間を超えて隣接する点は距離に関わらず必ず残す。
      * @param maxPointCount 指定した場合、DP適用後もこの点数を超えるならepsilonを倍々にして再実行する。
-     *   それでも上限を超える場合（時間ガードで保護された点だけで上限を超えるケースを含む）は、
-     *   残った点列を先頭・末尾を保ったまま均等間引きし、必ず上限以下に収める（ハードキャップ）。
+     *   それでも上限を超える場合は、時間ガードで保護された点（区切り点）を優先的に残したまま
+     *   均等間引きし、必ず上限以下に収める（ハードキャップ）。保護点数自体が上限を超える場合のみ、
+     *   保護点も間引き対象になる（データが密すぎて上限内に収まらない原理的な限界のため許容する）。
      * @return 残す点の元配列上でのインデックス一覧（昇順、重複なし。常に先頭と末尾を含む）。
      */
     fun simplify(
@@ -59,10 +60,10 @@ object Simplifier {
                 result = runDouglasPeucker(xs, ys, breakpoints, epsilon)
                 iterations++
             }
-            // 時間ガードで保護された点（区切り点）だけで上限を超える等、epsilon倍化では
-            // それ以上減らせない場合に備え、先頭・末尾を保ったまま均等間引きして必ず上限以下に落とす。
+            // epsilon倍化ではそれ以上減らせない場合に備え、時間ガード保護点（breakpoints）を
+            // 優先的に残したまま均等間引きして必ず上限以下に落とす（D-018）。
             if (result.size > maxPointCount) {
-                result = decimateToLimit(result, maxPointCount)
+                result = decimateToLimit(result, breakpoints, maxPointCount)
             }
         }
         return result
@@ -153,13 +154,90 @@ object Simplifier {
     }
 
     /**
-     * [result]（昇順・重複なしのインデックス列）を、先頭・末尾を保ったまま均等な間隔で間引き、
-     * 高々[maxPointCount]件に収める（時間ガードで保護された点も間引き対象になりうる）。
+     * [result]（昇順・重複なしのインデックス列）を高々[maxPointCount]件に間引く（D-018）。
+     * [breakpoints]（時間ガード保護点。[result]は常にその上位集合）由来の点は、その数が
+     * [maxPointCount]以下である限り全て残し、残り枠を非保護点の均等間引きに充てる
+     * （先頭・末尾は常に保護点なので自動的に保たれる）。保護点数自体が[maxPointCount]を
+     * 超える場合のみ、保護点も含めて全体を均等間引きする。
      */
-    private fun decimateToLimit(result: IntArray, maxPointCount: Int): IntArray {
+    private fun decimateToLimit(result: IntArray, breakpoints: IntArray, maxPointCount: Int): IntArray {
         val limit = maxPointCount.coerceAtLeast(2)
         val k = result.size
         if (k <= limit) return result
+
+        val isProtected = markProtected(result, breakpoints)
+        var protectedCount = 0
+        for (p in isProtected) if (p) protectedCount++
+
+        return if (protectedCount <= limit) {
+            decimateNonProtected(result, isProtected, protectedCount, limit)
+        } else {
+            decimateEvenly(result, limit)
+        }
+    }
+
+    /**
+     * [breakpoints]（昇順・[result]の上位集合）由来の点が[result]のどの位置にあるかを
+     * 二本指走査（O(result.size + breakpoints.size)）で求める。
+     */
+    private fun markProtected(result: IntArray, breakpoints: IntArray): BooleanArray {
+        val isProtected = BooleanArray(result.size)
+        var bi = 0
+        for (ri in result.indices) {
+            while (bi < breakpoints.size && breakpoints[bi] < result[ri]) bi++
+            if (bi < breakpoints.size && breakpoints[bi] == result[ri]) {
+                isProtected[ri] = true
+                bi++
+            }
+        }
+        return isProtected
+    }
+
+    /**
+     * [result]のうち[isProtected]な点（[protectedCount]件、`<= limit`）を全て残し、
+     * 残り枠（`limit - protectedCount`件）を非保護点から均等間引きで選ぶ。
+     */
+    private fun decimateNonProtected(
+        result: IntArray,
+        isProtected: BooleanArray,
+        protectedCount: Int,
+        limit: Int
+    ): IntArray {
+        val remainingSlots = (limit - protectedCount).coerceAtLeast(0)
+        val nonProtectedCount = result.size - protectedCount
+        val keepNonProtected = BooleanArray(nonProtectedCount)
+        if (remainingSlots > 0 && nonProtectedCount > 0) {
+            val slotsToKeep = remainingSlots.coerceAtMost(nonProtectedCount)
+            if (slotsToKeep >= nonProtectedCount) {
+                for (i in 0 until nonProtectedCount) keepNonProtected[i] = true
+            } else {
+                val denom = (slotsToKeep - 1).coerceAtLeast(1)
+                for (j in 0 until slotsToKeep) {
+                    val idx = if (slotsToKeep == 1) 0 else ((j.toLong() * (nonProtectedCount - 1)) / denom).toInt()
+                    keepNonProtected[idx] = true
+                }
+            }
+        }
+
+        var keptNonProtectedCount = 0
+        for (v in keepNonProtected) if (v) keptNonProtectedCount++
+        val output = IntArray(protectedCount + keptNonProtectedCount)
+        var outputIndex = 0
+        var nonProtectedPointer = 0
+        for (i in result.indices) {
+            if (isProtected[i]) {
+                output[outputIndex++] = result[i]
+            } else {
+                if (keepNonProtected[nonProtectedPointer]) output[outputIndex++] = result[i]
+                nonProtectedPointer++
+            }
+        }
+        return output
+    }
+
+    /** [result]を先頭・末尾を保ったまま均等な間隔で間引き、高々[limit]件に収める。 */
+    private fun decimateEvenly(result: IntArray, limit: Int): IntArray {
+        val k = result.size
         val denom = limit - 1
         val kept = LinkedHashSet<Int>(limit)
         for (j in 0 until limit) {
