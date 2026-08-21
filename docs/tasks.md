@@ -68,6 +68,7 @@
 - MediaStoreロールバック時のdelete呼び出し自体が失敗した場合の例外伝播（T-008bレビューLow、二重の狭い条件が重なる必要があり発生頻度が低いため見送り。D-010参照）
 - snapshotタイムアウト後に遅延コールバックが来た場合のBitmap未回収（T-008bレビューNit、実害なしのため見送り）
 - `parseZip`が複数エントリを走査中、あるエントリの`parseRoot`が`format`未確定のまま例外を投げると、それ以前に処理済みだった別エントリのデータもろとも失われる件（T-011で発見、稀な複合条件のため見送り。D-014参照）
+- `Simplifier.decimateNonProtected`内の到達不能な分岐（デッドコード、実害なし）とprotectedCount==maxPointCount境界値の専用テスト追加（T-012bレビューLow/Nit、見送り。D-018参照）
 
 ## メモ
 
