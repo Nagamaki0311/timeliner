@@ -46,6 +46,7 @@ D-018参照。T-012のReviewer指摘（`decimateToLimit`がDP適用後の結果�
 
 ### 次回開始位置
 - T-013（560日規模の実データ対応: 重い処理のUIスレッドからの排除、S2）に着手する。D-017参照。T-012・T-012bにより`Simplifier`自体の計算量・保護点優先度の問題は解消済みのため、次はUIスレッド上での同期呼び出し構造（`RouteOverlayView.recomputeAndInvalidate`・`VideoExporter`）の非同期化に着手する想定。
+- 本タスクの変更（`Simplifier.kt`・`SimplifierTest.kt`・docs/tasks.md・本エントリ含む）はコミット済み（コミットハッシュ`27eb475`、コミットメッセージ先頭行: `T-012b: decimateToLimitに保護点優先ロジックを追加する(D-018)`）。本行の追記自体はStop Hook（subagent-doc-check）が未コミット差分の有無で記録漏れを検知する仕様のため意図的に未コミットのまま残す。内容に変更はなく、Manager確認後にコミットして問題ない。
 
 ## 2026-08-21 T-012 560日規模の実データ対応: 計測基盤とSimplifierのANR根治（S0+S1）
 
