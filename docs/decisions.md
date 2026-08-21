@@ -563,3 +563,35 @@
 - 以降、`ViewModel`層に世代ガード等の並行性ロジックを追加する場合、DB/リポジトリ依存を注入可能にしてテスト可能な形で実装するパターンを踏襲する。
 - キャッシュ無効化処理は、参照を外すだけでなく実行中の`Job`/`Deferred`を明示的にキャンセルするパターンを踏襲する。
 
+---
+
+## D-021: T-015レビュー指摘への対応方針（上書き確認後の進捗リセット、インポートのキャンセル不能、初回発火の早期化）
+
+- 日付: 2026-08-21
+- 状態: 採用
+
+### 背景
+- T-015（インポート進捗表示）のレビューで、ReviewerがMedium 2件・Low 2件・Nit 1件を検出した。
+  1. （Medium/CONFIRMED）`confirmOverwrite()`が`_importState.value = ImportUiState.InProgress()`（既定値）で初期化するため、確認ダイアログ通過後にパース完了直前まで表示されていた点数・日付範囲が唐突に消え「インポート中…」へ戻る。DB書き込みフェーズ（`commitImport`）では`onProgress`が呼ばれないため、ここで表示が空白化したまま次のフェーズへ進む。
+  2. （Medium/CONFIRMED）`ImportSource.readRawTrack`/`TimelineJsonParser.parseJson`/`parseZip`は同期ブロッキング処理でキャンセル協調的なチェック（`isActive`/`ensureActive`等）を持たない。`viewModelScope`がキャンセルされて（画面破棄等）も、`Dispatchers.IO`上のパース処理自体は止まらず、既にクリアされたViewModelの`_importState`へ進捗コールバックが書き込み続ける。この欠陥自体は`importFrom`に元々存在していた設計ギャップ（`exportVideo`が持つ`cancelExport()`に相当する仕組みが`importFrom`には無い）だが、進捗コールバックの導入によりキャンセル未対応の窓（パース全体の期間）がより露出する形になった。
+  3. （Low/CONFIRMED、実測）`RawTrackBuilder.lastProgressTimeMillis`の初期値が`0L`のため、最初の`addPoint`呼び出し時点で経過時間条件が必ず真になり、`pointCount=1`という意図しない早期タイミングで`onProgress`が発火する。
+  4. （Low/CONFIRMED）追加されたテスト3件はすべて`parseJson`のみが対象で、`parseZip`側の`onProgress`（複数エントリをまたいだ累積、1パス目`scanForSemanticLocationHistoryEntry`での不発火）を検証していない。
+  5. （Nit）`TimelineViewModel`レベルの自動テストが今回も無い（`ImportUiState.InProgress`のdata class化・`confirmOverwrite`のリセット挙動）。
+
+### 決定
+1. 上記1・2・3・4を修正する（T-015b）。
+   - `confirmOverwrite()`は、`pendingImport`が保持する直前のパース結果（点数・日付範囲）を引き継いだ状態を維持する、またはDB書き込みフェーズ専用の状態・文言に変更し、パース完了値が唐突に消えないようにする。
+   - `RawTrackBuilder`（または`TimelineJsonParser.parseJson`/`parseZip`）に軽量なキャンセル可能化を入れる。新規外部依存を追加せず、例えば`onProgress`コールバックの戻り値や別途渡す`() -> Boolean`（「継続してよいか」を返す関数、`viewModelScope`が`isActive`を渡せる）で、キャンセル済みなら例外を投げてパースを打ち切れるようにする。
+   - `lastProgressTimeMillis`の初期値を「未設定」を表す形にし、最初の`addPoint`時点で即座に発火しないようにする（例えば初回呼び出し時に現在時刻で初期化してから経過時間判定を行う、または点数閾値のみで初回を判定する）。
+   - `parseZip`版の`onProgress`テストを最低1件追加する。
+2. 5（Nit）は今回対応せず、docs/tasks.mdバックログへ記録するに留める（REVIEW.mdの過剰指摘抑制方針、実害が小さいため）。
+
+### 理由
+- 1はユーザーの元要件「読み込み完了をユーザーが明確に確認できる」の趣旨に反し、進捗表示が信頼できないものに見えてしまうため修正する。
+- 2はAGENTS.md原則8（手を抜かない対象、エラーハンドリング・リソース管理）に照らし、560日規模という大きなファイルを扱う本改修の中心テーマで「止められない長時間バックグラウンド処理」を放置すべきではないと判断した。ただし新規のキャンセル基盤（`Job`管理等）を大きく作り込むのではなく、既存の`viewModelScope`のキャンセル状態を渡すだけの最小実装に留める（AGENTS.md原則2「最小実装」）。
+- 3・4は軽微だが、間引きロジックという本タスクの中核部分の正確性・テスト網羅性に関わるため合わせて修正する。
+
+### 影響
+- 以降、同期ブロッキングな重い処理へ進捗コールバックを追加する場合、キャンセル伝播（呼び出し元の`CoroutineScope`の生存確認）もあわせて設計するパターンを踏襲する。
+- 状態遷移をまたいで表示を維持すべき情報（今回は点数・日付範囲）は、次状態の初期化時に既定値へ戻さず引き継ぐパターンを踏襲する。
+
