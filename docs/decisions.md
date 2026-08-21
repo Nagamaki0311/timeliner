@@ -352,4 +352,27 @@
 ### 影響
 - 実機・エミュレータが無い本開発環境では、修正が実機上で正しく見た目を解消するかの目視確認はできない（D-003以来の既知の制約）。Android公式のedge-to-edge対応ドキュメント・`WindowInsets`APIの一般的な使用方法との整合性、コードレビューでの確認に留める。
 - 今後、`MainActivity.kt`のタブ構造・`TimelineScreen.kt`のレイアウト構成（PeriodSelector→地図→PlaybackControls→Button）を変更する場合、システムバーに新たに隣接することになる要素へ同様の`windowInsetsPadding`適用が必要にならないか確認すること。
+- 本Dの「常にシステムバーと直接接することがない」という前提は縦方向のみを検証したものであり、後継のD-013で横方向（ランドスケープ+レガシーナビゲーションバー）の見落としが判明し対応方針が追加された。
+
+---
+
+## D-013: T-010レビュー指摘への対応方針（ランドスケープ+レガシーナビゲーションバーでの横方向inset未対応）
+
+- 日付: 2026-08-20
+- 状態: 採用
+
+### 背景
+- T-010（edge-to-edge対応）のレビューで、ReviewerがMedium/PLAUSIBLEを検出した。D-012は「`PeriodSelector`・`PlaybackControls`は常にTabRow（ステータスバー対応済み）とButton（ナビゲーションバー対応済み）に挟まれているためシステムバーと直接接しない」という縦方向の位置関係のみを根拠にinset対応を省略していたが、この判断は横方向（左右）を検証していなかった。
+- `AndroidManifest.xml`に`screenOrientation`の指定が無くコード内にも画面回転ロックが無いため、端末をランドスケープに回転できる。ランドスケープかつ2/3ボタンナビゲーション（レガシーナビゲーションバー、ジェスチャーナビゲーションでない設定）の端末では、Android標準仕様上ナビゲーションバーが画面左右いずれかの端に移動し、`WindowInsets.navigationBars`の`left`/`right`が非ゼロになる。この状態で、`PeriodSelector`の「前の期間」「次の期間」ボタン、`PlaybackControls`のシークバー・速度モード選択ボタン群はいずれも`fillMaxWidth()`で画面端に接するため、横方向のinset paddingを持たず、ナビゲーションバーの下に隠れて操作不能になりうる。ユーザーが報告した症状と同種の不具合が、別の画面向き・ナビゲーション設定の組み合わせで再現しうる状態だった。
+
+### 決定
+- `TimelineScreen.kt`の`PeriodSelector`・`PlaybackControls`を包む領域（またはそれぞれの呼び出し箇所）に、`Modifier.windowInsetsPadding(WindowInsets.navigationBars.only(WindowInsetsSides.Horizontal))`を追加し、横方向のみのナビゲーションバーinsetを確保する（縦方向は既存のTabRow/Button側の対応と重複させない）。
+- `MainActivity.kt`のTabRow（ステータスバー、常に画面上端固定）はこの横方向の懸念自体が該当しないため変更不要。`ImportScreen.kt`はルート`Column`に`WindowInsets.navigationBars`（全方向）を既に適用済みのため対応不要。
+
+### 理由
+- 縦方向のみで「常にシステムバーと直接接しない」と判断したD-012の前提が不正確だった。ユーザーが実機で踏んだ不具合と同じ種類（操作可能なUI要素がシステムバーの下に隠れる）であり、AGENTS.md原則8「手を抜かない対象」に照らし、発見できた時点で対応するのが妥当と判断した。
+- 画面回転ロックを新たに追加する（不具合を回避するために機能を制限する）よりも、insetを正しく確保する方が根本的な修正になる。
+
+### 影響
+- 以降、`TimelineScreen.kt`にシステムバーと接しうる新規要素を追加する場合、縦方向だけでなく端末回転時の横方向のinsetも検討すること。
 
