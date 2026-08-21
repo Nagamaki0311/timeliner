@@ -373,6 +373,51 @@ class TimelineJsonParserTest {
         assertEquals(0, track.segments.size)
     }
 
+    // ---- ルート直下の未知キー（rawSignals等）の読み飛ばし失敗からの回復 ----
+
+    /**
+     * 実機で報告された不具合の再現テスト（docs/decisions.md D-014）。
+     * `rawSignals`は`semanticSegments`の兄弟キー（ルートオブジェクト直下）であり、アプリが
+     * 使わないv1スコープ外のフィールドとして`skipValue()`で読み飛ばされる。ファイルがこの
+     * `rawSignals`配列の途中で切り詰められている（`End of input`となる）場合でも、
+     * 既に`semanticSegments`から読み終えている有効なデータは失わずにインポートを完了できることを検証する。
+     */
+    @Test
+    fun parseJson_rawSignalsTruncatedMidArrayAfterValidSemanticSegments_returnsAlreadyParsedData() {
+        val json = buildString {
+            append(
+                """
+                {
+                  "semanticSegments": [
+                    {
+                      "startTime": "1700000000000",
+                      "endTime": "1700000001000",
+                      "visit": {
+                        "topCandidate": {
+                          "placeId": "ChIJ_TRUNCATED_RAWSIGNALS",
+                          "placeLocation": {"latLng": "35.6812°, 139.7671°"}
+                        }
+                      }
+                    }
+                  ],
+                  "rawSignals": [
+                """.trimIndent()
+            )
+            repeat(5000) { i ->
+                if (i > 0) append(",")
+                append("{\"idx\":").append(i).append(",\"noise\":\"x\"}")
+            }
+            // 意図的に配列・オブジェクトを閉じない（ファイルが途中で切り詰められた状態を再現する）。
+        }
+
+        val track = TimelineJsonParser.parseJson(json.byteInputStream())
+
+        assertEquals(1, track.pointCount)
+        assertEquals(1, track.segments.size)
+        assertEquals("ChIJ_TRUNCATED_RAWSIGNALS", track.segments[0].placeId)
+        assertEquals(35.6812, track.point(0).latitude, 1e-9)
+    }
+
     // ---- zip: 複数データ源の優先順位付け・時刻ソート ----
 
     @Test

@@ -376,3 +376,35 @@
 ### 影響
 - 以降、`TimelineScreen.kt`にシステムバーと接しうる新規要素を追加する場合、縦方向だけでなく端末回転時の横方向のinsetも検討すること。
 
+---
+
+## D-014: T-011実機報告への対応方針（rawSignals読み飛ばし失敗によるインポート全体の失敗を修正）
+
+- 日付: 2026-08-21
+- 状態: 採用
+
+### 背景
+- ユーザーが実際の端末内Timeline(Android形式、`semanticSegments`ルート)のエクスポートファイル（130万行超）をインポートしたところ、「インポートに失敗しました: End of input at line 1325233 column 25 path $.rawSignals[12163]..[137610].」で失敗した。
+- コード調査で、`TimelineJsonParser.parseRootObject`が`semanticSegments`の兄弟キー（v1スコープ外の`rawSignals`等、D-002決定7参照）を`else -> reader.skipValue()`で無条件に読み飛ばしており、この`skipValue()`が例外を投げると、既に`semanticSegments`から正常にパースできていた有効なデータ（`builder`蓄積済みの点・セグメント）ごとすべて破棄されインポート全体が失敗する設計上の欠陥を確認した。
+
+### 決定（原因調査の結果）
+1. **`skipValue()`自体の巨大配列スキップに関するバグではないことを実測で確認した**。Gson `JsonReader`（2.14.0、gsonの実ソース`JsonReader.skipValue()`をGitHubから直接確認）を用い、15万要素の合成`rawSignals`配列を含む正常な（切り詰めていない）JSONに対し`skipValue()`を実行したところ問題なく完走した（`/tmp`のスクラッチ検証、docs/には残さない一時スクリプト）。一方、同じ配列を意図的に末尾切り詰めたJSONでは、実際に`java.io.EOFException: End of input`が`skipValue()`から送出されることを確認した。すなわち`skipValue()`自体に大規模配列特有の不具合は無く、EOFExceptionは入力ストリームが構造的に完結する前に終わった場合にのみ発生する。
+2. **`ImportSource.kt`のストリーム処理には人為的な打ち切り要因が無いことを確認した**。`ContentResolver.openInputStream()`が返す`InputStream`をバッファサイズ制限・タイムアウト・独自ラッピングなしでそのまま`InputStreamReader`→`JsonReader`へ渡しているのみで、`isZip()`のzipマジックナンバー確認も同一ストリームを使い回さず新規に`opener()`を呼び直しているため、状態破壊の余地も無い。したがって、ユーザーの実ファイルが本当に途中で切れていた（Google側のエクスポート処理・端末間のファイル転送・SAFプロバイダ側の大容量ファイル読み込み制限等、アプリのコード外の要因）可能性が高いと判断する。
+3. **同種の設計欠陥が`parseArrayElementSafely`（`semanticSegments`/`timelineObjects`/`locations`各配列の要素単位パースで共有される関数）にも存在することを実測で追加確認した**。同関数は`JsonParser.parseReader(reader)`で1要素をJSONツリーとして丸ごと消費した後、その解釈のみをtry/catchで保護する設計（D-004決定3）だが、`JsonParser.parseReader(reader)`自体（ツリーへの変換、streaming readerでの消費）はtry/catchの外にあり、要素の消費中に元のstreaming readerが構造的に不完全な入力に到達した場合（`JsonSyntaxException`/`MalformedJsonException`）は保護されず、呼び出し元の配列走査ループを抜けて上位へ伝播することを最小の合成JSON（配列2要素、2要素目を意図的に途中で切り詰め）で確認した。これは`parseRootObject`直下の`else -> skipValue()`と同じ「巨大な未知データの読み飛ばし失敗が既存の有効データごと破棄させる」という根本原因の別の発生箇所である。
+4. 加えて、実測により**リカバリ実装上重要な制約**を確認した: `skipValue()`等がEOFException/MalformedJsonExceptionを送出した後、同一`JsonReader`インスタンスに対する以降の呼び出し（`hasNext()`/`endObject()`等）はすべて同じ例外を再送出する（内部状態が破損したまま復旧しない）。したがって、例外発生後は当該`reader`に一切触れず、既に構築済みの`builder`データのみを使って即座に処理を終える必要がある。
+
+### 決定（修正方針）
+1. `TimelineJsonParser.parseRootObject`のwhileループ本体（`when`ブロック全体。`else -> skipValue()`だけでなく`semanticSegments`/`timelineObjects`/`locations`の各分岐も含む）を`try/catch (e: Exception)`で囲む。例外発生時、その時点で`format`が確定していれば（＝いずれかの主要形式から有効なデータを読み終えている）警告ログを出力し`reader`へは以降触れずその`format`を返して正常終了する。`format`が未確定であれば回復可能なデータが無いためこれまで通り再送出する。
+   - `when`ブロック全体を対象にした理由: `else`分岐だけを保護すると、決定3で確認した`parseArrayElementSafely`起因の例外（`semanticSegments`等の既知キー処理中に発生する構造的パース失敗）が素通りしてしまうため。`when`全体を1箇所で保護することで、`parseArrayElementSafely`側を個別に改修せず（呼び出しの深いネストへ手を入れずに）同じ根本原因を一度に塞げる（AGENTS.md原則7「共有関数側を一度だけ直す」の精神に沿い、実際には共有の失敗点を`parseRootObject`という単一の境界に集約する設計とした）。
+2. `TimelineJsonParserTest.kt`に、`semanticSegments`が正常な1件のVISITセグメントを含み、`rawSignals`配列（5000要素）が意図的に閉じ括弧なしで終わる（切り詰めを再現する）合成JSONを追加し、例外を投げずに`semanticSegments`由来の有効なデータ（点1件・セグメント1件）が正しく返ることを検証した。
+
+### 理由
+- 「アプリが一切使わない補助データ（`rawSignals`）の読み込み失敗によって、ユーザーが実際に必要とするデータ（移動ルート）まで失われる」のは、AGENTS.md原則8「データ損失を防ぐエラーハンドリング」に直接反する重大な欠陥であり、必須修正とする。
+- `when`ブロック全体を保護範囲とする設計は、決定3で発見した`parseArrayElementSafely`の類似欠陥を、そちらのコードへ触れずに閉じられる最小差分であり、AGENTS.md判定ラダー7（要件を過不足なく満たす最小実装）に合致する。`parseArrayElementSafely`自体を「要素の消費失敗時に配列走査を打ち切る」設計へ改修する案も検討したが、`reader`が例外後は使用不能という決定4の制約により`parseArrayElementSafely`単体では「今読んでいる配列を安全に打ち切って正常終了する」ことができず（＝結局呼び出し元である`parseRootObject`まで「打ち切って良い」という判断を伝播させる必要がある）、`parseRootObject`側の1箇所で吸収する方が変更範囲が小さく、責務も自然（「ルート直下のどのフィールドであれ、致命的でない失敗はそこで打ち切ってこれまでの成果を返す」という一貫した境界になる）と判断した。
+- `parseZip`が複数エントリを走査する際、あるエントリの`parseRoot`が`format`未確定のまま例外を投げると、そのエントリ以前に処理済みだった別エントリのデータもろとも失われる問題が残ることを認識しているが、これは「同一zip内に完全に読み取れない別形式のエントリが混在する」というより稀な複合条件であり、かつ今回報告された実際の不具合（単一の巨大`.json`ファイル）の対象外であるため、YAGNI（判定ラダー1）に従い今回は対応せずdocs/tasks.mdのバックログへ記録するに留める。
+
+### 影響
+- 以降、`TimelineJsonParser`に新たなルート直下キー・配列を追加する場合も、「主要データを読み終えた後に発生した回復不能なストリーム破損は、収集済みデータを保持したまま打ち切ってよい」という`parseRootObject`の境界設計を踏襲する。
+- `parseZip`の複数エントリ間でのこの種の部分失敗保護は未対応のまま残る（上記「理由」参照、バックログに追加）。
+- ユーザーの実ファイル自体は機微な個人位置情報のため入手できず、実際にファイルが途中で切れていた具体的原因（エクスポート処理側かファイル転送側か）そのものの特定はできていない。今回の修正は原因を問わず症状（有効データの巻き添え破棄）を根本から防ぐものであり、原因特定ができない場合でも有効な対処である。
+

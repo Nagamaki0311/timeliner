@@ -177,20 +177,43 @@ object TimelineJsonParser {
         reader.beginObject()
         var format: TimelineFormat? = null
         while (reader.hasNext()) {
-            when (reader.nextName()) {
-                "semanticSegments" -> {
-                    parseDeviceTimelineArray(reader, builder)
-                    format = TimelineFormat.DEVICE_TIMELINE_ANDROID
+            try {
+                when (reader.nextName()) {
+                    "semanticSegments" -> {
+                        parseDeviceTimelineArray(reader, builder)
+                        format = TimelineFormat.DEVICE_TIMELINE_ANDROID
+                    }
+                    "timelineObjects" -> {
+                        parseTimelineObjectsArray(reader, builder)
+                        format = TimelineFormat.TAKEOUT_SEMANTIC_LOCATION_HISTORY
+                    }
+                    "locations" -> {
+                        parseRecordsArray(reader, builder)
+                        format = TimelineFormat.TAKEOUT_RECORDS
+                    }
+                    // rawSignals/userLocationProfile等の兄弟キーはv1スコープ外（docs/decisions.md D-002参照）。
+                    else -> reader.skipValue()
                 }
-                "timelineObjects" -> {
-                    parseTimelineObjectsArray(reader, builder)
-                    format = TimelineFormat.TAKEOUT_SEMANTIC_LOCATION_HISTORY
+            } catch (e: Exception) {
+                // rawSignals等の巨大な兄弟キーの読み飛ばし中にストリームが途中で終わっている等の理由で
+                // 例外が起きても、既にsemanticSegments/timelineObjects/locationsのいずれかから有効な
+                // データを読み終えていれば（=formatが確定していれば）、そのデータを失わずインポートを
+                // 完了する（docs/decisions.md D-014参照）。formatが未確定の場合は回復可能なデータが
+                // 無いため、従来通り例外を投げる。
+                val recoveredFormat = format
+                if (recoveredFormat != null) {
+                    // 注意: この時点でreaderのストリーム位置は壊れており、hasNext()/endObject()等の
+                    // 以降の呼び出しも同じ例外を再送出する（実測確認済み）。readerへは以降触れず、
+                    // 収集済みのbuilderデータのみを使って即座に返す。
+                    Log.w(
+                        TAG,
+                        "ルートオブジェクトのフィールド読み込み中にエラーが発生しましたが、" +
+                            "既に${recoveredFormat}形式の有効なデータを取得済みのため、そのままインポートを完了します: ${e.message}",
+                        e
+                    )
+                    return recoveredFormat
                 }
-                "locations" -> {
-                    parseRecordsArray(reader, builder)
-                    format = TimelineFormat.TAKEOUT_RECORDS
-                }
-                else -> reader.skipValue()
+                throw e
             }
         }
         reader.endObject()

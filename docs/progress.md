@@ -17,6 +17,34 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-011 実機報告対応: rawSignals読み飛ばし失敗でインポート全体が失敗する不具合を修正
+
+### 実施内容
+- ユーザーが実際の端末内Timeline(Android形式)エクスポートファイル（130万行超）をインポートしたところ「インポートに失敗しました: End of input at line 1325233 column 25 path $.rawSignals[12163]..[137610].」で失敗したと報告された。
+- **原因調査**: `TimelineJsonParser.kt`が使う`com.google.gson.stream.JsonReader`（2.14.0）の実ソースをGitHubから取得して`skipValue()`の実装を確認した上、スクラッチ環境（`javac`+実際のgson jar、`/tmp`配下の一時スクリプト、docsには残さない）で以下を実測検証した。
+  1. 15万要素の合成`rawSignals`配列を含む正常な（切り詰めていない）JSONに対し`skipValue()`を実行→問題なく完走（Gsonの`skipValue()`自体に大規模配列特有のバグは無い）。
+  2. 同じ配列を末尾で意図的に切り詰めたJSONに対し同じ経路を実行→実際に`java.io.EOFException: End of input`が発生することを確認（ユーザーが報告した症状と同種）。
+  3. `ImportSource.kt`を確認したところ、`ContentResolver.openInputStream()`の結果をバッファサイズ制限・タイムアウト・独自ラッピング無しでそのまま`InputStreamReader`→`JsonReader`へ渡しており、アプリ側のコードに人為的な打ち切り要因は無いことを確認した。
+  4. 追加で、配列2要素中2要素目を意図的に途中で切り詰めた最小合成JSONを使い、`TimelineJsonParser.parseArrayElementSafely`（`semanticSegments`/`timelineObjects`/`locations`各配列の要素単位パースで共有される関数）にも同種の欠陥（`JsonParser.parseReader(reader)`自体がtry/catchの外にあり、要素消費中の構造的パース失敗が保護されず上位へ伝播する）があることを実測で確認した。
+  5. さらに、EOFException等の送出後は同一`JsonReader`インスタンスへの以降の呼び出し（`hasNext()`/`endObject()`等）もすべて同じ例外を再送出する（内部状態が破損したまま復旧しない）ことを実測確認した。これは修正実装（次項）で「例外発生後はreaderへ一切触れず即座に返す」設計にした根拠。
+  - 詳細・実測結果はdocs/decisions.md D-014に記録。ユーザーの実ファイル自体は機微な個人位置情報のため入手できず、ファイルが途中で切れていた具体的原因（Google側のエクスポート処理かファイル転送側か）そのものの特定はできていない。
+- **修正**: `TimelineJsonParser.parseRootObject`のwhileループ本体（`when`ブロック全体、`else -> skipValue()`だけでなく`semanticSegments`/`timelineObjects`/`locations`の各分岐も含む）を`try/catch (e: Exception)`で囲んだ。例外発生時、その時点で`format`が確定していれば（主要形式のデータを読み終えている）警告ログを出力し、`reader`へは以降触れずにその`format`をそのまま返して正常終了する。`format`未確定なら回復可能なデータが無いため従来通り再送出する。`when`ブロック全体を保護範囲としたのは、`else`分岐だけだと調査4で見つけた`parseArrayElementSafely`起因の例外（既知キー処理中の構造的パース失敗）が素通りしてしまうため。`parseArrayElementSafely`自体は改修していない（reader例外後は使用不能という調査5の制約により、`parseRootObject`側1箇所で吸収する方が変更範囲が小さく責務も自然と判断、D-014参照）。
+
+### 結果
+- `TimelineJsonParserTest.kt`に、`semanticSegments`が正常な1件のVISITセグメントを含み、`rawSignals`配列（5000要素）が意図的に閉じ括弧なしで終わる（切り詰めを再現する）合成JSONを追加した（`parseJson_rawSignalsTruncatedMidArrayAfterValidSemanticSegments_returnsAlreadyParsedData`）。例外を投げずに`semanticSegments`由来の有効なデータ（点1件・セグメント1件、`placeId`・座標とも一致）が正しく返ることを確認した。
+- `./gradlew testDebugUnitTest`成功（既存テスト含め全件パス）。
+- `./gradlew assembleDebug`成功。
+
+### 懸念点（既知の制約として残すもの）
+- `parseZip`が複数エントリを走査中、あるエントリの`parseRoot`が`format`未確定のまま例外を投げると、それ以前に処理済みだった別エントリのデータもろとも失われる問題は未対応（稀な複合条件のため今回は見送り、YAGNI。docs/tasks.mdバックログ・D-014参照）。
+- ユーザーの実ファイルそのものでの再検証はできていない（機微な個人位置情報のため入手不可という制約下、合成データでの再現・検証に留まる）。
+
+### 次回開始位置
+- 特になし。T-011完了。ユーザーが同じファイルで再度インポートを試し、実際に成功するかの実機側フィードバックを待つことが望ましい。
+
+### コミット
+- 本タスクの変更（コード・テスト・docs/tasks.md・docs/decisions.md・本エントリ含む）はManager確認後にコミットする。
+
 ## 2026-08-21 T-010b T-010レビュー指摘の修正（ランドスケープ+レガシーナビゲーションバーでの横方向inset未対応）
 
 ### 実施内容
