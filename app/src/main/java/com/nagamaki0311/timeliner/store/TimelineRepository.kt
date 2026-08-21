@@ -148,18 +148,6 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
         }
     }
 
-    /** `days`テーブルの`date`列のみを日付昇順で返す軽量クエリ（BLOBは読まない、docs/tasks.md T-014）。 */
-    fun queryDayDates(): List<String> {
-        val db = dbHelper.readableDatabase
-        val dates = mutableListOf<String>()
-        db.query(TimelineDb.TABLE_DAYS, arrayOf("date"), null, null, null, null, "date ASC").use { cursor ->
-            while (cursor.moveToNext()) {
-                dates.add(cursor.getString(0))
-            }
-        }
-        return dates
-    }
-
     /** `days`テーブルに存在する最古日〜最新日を返す。データが1件も無ければ`null`（docs/tasks.md T-014）。 */
     fun queryDateRange(): Pair<String, String>? {
         val db = dbHelper.readableDatabase

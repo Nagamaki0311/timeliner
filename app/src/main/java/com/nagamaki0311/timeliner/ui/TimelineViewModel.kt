@@ -16,14 +16,13 @@ import com.nagamaki0311.timeliner.playback.SpeedMode
 import com.nagamaki0311.timeliner.process.GeoBounds
 import com.nagamaki0311.timeliner.store.PointBlobCodec
 import com.nagamaki0311.timeliner.store.RouteOverview
+import com.nagamaki0311.timeliner.store.RouteOverviewCache
 import com.nagamaki0311.timeliner.store.TimelineDb
 import com.nagamaki0311.timeliner.store.TimelineRepository
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -91,13 +90,11 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     /**
      * [RouteOverview]のキャッシュ。初回アクセス時に[Dispatchers.Default]上で1度だけ構築し、
      * インポート成功時（[commitPreparedImport]）に無効化して再構築させる（docs/tasks.md T-014）。
-     * [routeOverviewGeneration]は、構築中に[invalidateRouteOverview]が呼ばれた場合に、
-     * 完了した古い構築結果を[routeOverview]へ書き戻さないようにするための世代カウンタ
-     * （[PlaybackController]の`rebuildGeneration`と同じパターン、docs/decisions.md D-019）。
+     * 並行性ロジック（世代ガード）自体は[RouteOverviewCache]へ切り出し、DBに依存しない形で
+     * JVM単体テスト（[RouteOverviewCacheTest][com.nagamaki0311.timeliner.store.RouteOverviewCacheTest]）
+     * できるようにしている（docs/decisions.md D-020）。
      */
-    private var routeOverview: RouteOverview? = null
-    private var routeOverviewBuildJob: Deferred<RouteOverview>? = null
-    private var routeOverviewGeneration = 0L
+    private val routeOverviewCache = RouteOverviewCache(viewModelScope) { RouteOverview.build(repository) }
 
     /**
      * アニメーション再生の状態管理（docs/tasks.md T-007）。[selectedPeriod]のルートデータが変わるたびに
@@ -277,30 +274,11 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         return sliced to bounds
     }
 
-    /**
-     * [routeOverview]を返す。未構築なら[Dispatchers.Default]上で1度だけ構築してキャッシュする
-     * （並行呼び出しは同じ構築[Job]を共有する）。
-     */
-    private suspend fun ensureRouteOverview(): RouteOverview {
-        routeOverview?.let { return it }
-        val myGeneration = routeOverviewGeneration
-        val job = routeOverviewBuildJob ?: viewModelScope.async(Dispatchers.Default) {
-            RouteOverview.build(repository)
-        }.also { routeOverviewBuildJob = it }
-        val result = job.await()
-        if (myGeneration == routeOverviewGeneration) {
-            routeOverview = result
-            routeOverviewBuildJob = null
-        }
-        return result
-    }
+    /** [routeOverviewCache]を返す。未構築なら[Dispatchers.Default]上で1度だけ構築してキャッシュする。 */
+    private suspend fun ensureRouteOverview(): RouteOverview = routeOverviewCache.ensure()
 
-    /** インポート成功時に[routeOverview]キャッシュを無効化し、次回アクセス時に再構築させる。 */
-    private fun invalidateRouteOverview() {
-        routeOverviewGeneration++
-        routeOverview = null
-        routeOverviewBuildJob = null
-    }
+    /** インポート成功時に[routeOverviewCache]を無効化し、次回アクセス時に再構築させる。 */
+    private fun invalidateRouteOverview() = routeOverviewCache.invalidate()
 
     /** [ImportUiState.ConfirmOverwrite]表示中に保持する、書き込み未実行の準備済みインポート。 */
     private var pendingImport: TimelineRepository.PreparedImport? = null

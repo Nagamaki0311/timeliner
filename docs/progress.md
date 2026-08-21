@@ -17,6 +17,32 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-21 T-014b T-014レビュー指摘の修正（RouteOverviewキャッシュの並行性テスト欠如、無効化時の未キャンセルJob、未使用メソッド）
+
+### 実施内容
+D-020参照。ReviewerがT-014で検出したHigh1件・Medium1件・Low1件（4件目のLowはバックログへ、対応不要）を修正した。
+
+1. **並行性ロジック（世代ガード）を`RouteOverviewCache`へ切り出した**（新設`app/src/main/java/com/nagamaki0311/timeliner/store/RouteOverviewCache.kt`）。
+   - `TimelineViewModel.ensureRouteOverview`/`invalidateRouteOverview`が直接持っていた`routeOverview`（キャッシュ）・`routeOverviewBuildJob`（進行中の構築`Deferred`）・`routeOverviewGeneration`（世代カウンタ）の3フィールドと、それらを操作するロジックをまるごと`RouteOverviewCache`クラス（`scope: CoroutineScope`と`builder: suspend () -> RouteOverview`をコンストラクタで受け取る）へ移した。`TimelineViewModel`は`routeOverviewCache = RouteOverviewCache(viewModelScope) { RouteOverview.build(repository) }`を1フィールド持つのみになり、`ensureRouteOverview()`/`invalidateRouteOverview()`はそれぞれ`routeOverviewCache.ensure()`/`.invalidate()`への薄い委譲になった。
+   - **切り出しが必要だった理由（重要な制約）**: タスク指示は当初「`TimelineViewModel`を直接インスタンス化してテストする」ことを想定していたが、実際に試したところ以下の2つの独立した理由で不可能だと判明した。
+     (a) `TimelineViewModel`のコンストラクタが要求する`TimelineRepository`は、内部で`TimelineDb`（`SQLiteOpenHelper`のサブクラス）を要求し、`TimelineDb`のコンストラクタは実`android.content.Context`を要求する。`Context`は抽象クラスで大量の抽象メソッドを持ち、Mockito等のモックライブラリ（本プロジェクトは未導入、新規依存追加はしない方針）無しに手動でスタブ実装するのは非現実的。
+     (b) `TimelineViewModel`の`init`ブロックが無条件に`viewModelScope.launch { loadRoute(...) }`を呼ぶ。`viewModelScope`は`Dispatchers.Main.immediate`を使うが、Robolectricや`kotlinx-coroutines-test`（いずれも未導入、新規依存は追加しない）が無いプレーンなJVM単体テスト環境では`Dispatchers.Main`が未初期化のため、`launch`呼び出し自体が`IllegalStateException`（"Module with the Main dispatcher had failed to initialize"）を投げる。これは`app/build.gradle.kts`の`testOptions.unitTests.isReturnDefaultValues = true`（android.*呼び出しを例外にせず既定値で通す設定）でも回避できない、`kotlinx-coroutines-core`側の別の制約。
+     実際に`RouteOverviewCache(newScope()) { ... }`のような形でDB/`ViewModel`非依存の構築ができたため、(a)(b)いずれも当面の対処は「並行性ロジック自体をDB/ViewModel非依存のクラスへ切り出す」ことで解決した（回避策の追加ではなく、責務を素直に分離しただけ）。
+   - `RouteOverviewCacheTest.kt`（新設、`app/src/test/java/com/nagamaki0311/timeliner/store/`）を追加し、`PlaybackControllerTest.kt`（D-019）と同じ`kotlinx.coroutines.runBlocking`＋`launch`（新規テスト依存追加なし）で2つのシナリオを検証した。
+     - `invalidateCalledDuringBuild_awaitingCallerGetsCancelled_nextEnsureRebuilds`: 構築中（`builder`が`delay(100)`で模擬待機中）に`invalidate()`を呼ぶと、（決定2の`cancel()`により）待機していた`ensure()`呼び出し自体が`CancellationException`で終わり古い結果を一切返さないこと、かつその後の`ensure()`呼び出しが必ず`builder`を再実行し新しい結果を返す（古い結果がキャッシュへ書き戻され再利用されてしまわないこと）を確認した。事前に`kotlinx-coroutines-core`単体で実験用テストを組み、`Job.cancel()`後は本体が`NonCancellable`で値を返せたとしても最終的に必ずキャンセル完了になる（実時間の競合に依存しない決定的な挙動）ことを実測確認した上でこのアサーションにした。
+     - `ensureCalledConcurrently_sharesSingleBuildJob_buildsOnlyOnce`: 5並行の`ensure()`呼び出しが同じ構築`Deferred`を共有し、`builder`が1回しか呼ばれず全呼び出しが同一インスタンスを受け取ることを確認した。
+2. **`invalidate()`が構築中の`Deferred`をキャンセルするよう修正**（決定2）。`RouteOverviewCache.invalidate()`内で`buildJob = null`する前に`buildJob?.cancel()`を呼ぶようにした。
+3. **未使用の`TimelineRepository.queryDayDates()`を削除**（決定3）。`grep -rn "queryDayDates" app/src`で他に呼び出し元が無いことを確認してから削除した。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（新設`RouteOverviewCacheTest`2件を含め全テストパス、`--rerun`で5回連続実行しフレーキーでないことも確認した）。
+- `./gradlew assembleDebug`が成功した。
+- D-020決定1の3件（High/Medium/Low）すべてに対応した。4件目（Low/PLAUSIBLE、`_routePoints`/`_routeBounds`の非アトミック更新）はD-020決定2により今回対応せず、docs/tasks.mdバックログに残す。
+
+### 次回開始位置
+- T-015（560日規模の実データ対応: インポート進捗表示、S4）へ進む。
+- 懸念点（将来的な見直し候補）: 本タスクで判明した「`TimelineViewModel`はJVM単体テストからインスタンス化できない」という制約は、T-014以前から存在していた既存の性質（`viewModelScope`の`init`ブロック使用、`TimelineRepository`のAndroid API依存）であり、T-014bで新たに生んだものではない。今後`TimelineViewModel`に新しい並行性ロジックを追加する場合も、`RouteOverviewCache`/`PlaybackController`と同じ「DB/ViewModel非依存の専用クラスへ切り出しテストする」パターンを踏襲すること（D-020の「影響」節にも記載）。
+
 ## 2026-08-21 T-014 560日規模の実データ対応: 概観点列と詳細ウィンドウの導入（S3）
 
 ### 実施内容
