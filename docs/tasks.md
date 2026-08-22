@@ -67,6 +67,7 @@
 - `RouteFrameRenderer.trimByProgress`の時刻補間で`Long×Float`により理論上の精度損失（T-020レビューLow/Nit、実測誤差は数ms程度で既存閾値へ無影響のため見送り。D-026参照）
 - `RouteFrameRenderer.Style`の`pastRoutePath`等が`DEFAULT_STYLE`シングルトン経由で画面再生・動画書き出し間の共有可変状態になる件（T-020レビューLow/PLAUSIBLE、既存の`routePath`/`routePaint`と同種のリスクで本タスク固有ではないため見送り。画面再生とエクスポートの同時実行という設計変更が入る場合に再検討。D-026参照）
 - 長期間再生中、`DetailWindow.needsReload`判定が再生フレーム毎（最大60Hz）にメインスレッドで走る件（T-021レビューLow/PLAUSIBLE、処理自体は軽量で実測での性能劣化は未確認・本環境では実機検証不可のため見送り。D-027参照）
+- `DetailWindowGateTest.kt`のKDocが「invalidateを呼ばない場合のレース再現も確認する」と実装範囲より広く主張している記述不一致（T-021bレビューLow、実害なしのため見送り）
 - 実データ（実際のTimelineエクスポートファイル）でのパーサ検証。ユーザーから個人情報を伏せたサンプル提供を受けられる場合に着手（D-002参照）
 - rawSignalsへの対応（D-002で v1スコープ外と決定。Records.json本体はD-004によりv1スコープに含めることへ変更済み）
 - TrackCleaner.removeSpeedSpikesが点列の先頭・末尾を判定対象外とする構造的な限界への対応（T-004レビューLow、実運用での発生可能性が低いため見送り）
