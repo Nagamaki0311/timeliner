@@ -25,6 +25,9 @@ D-025決定1・3に基づき、T-019（コミット613eef9）のレビュー指�
 - **Medium対応**: `PlaybackTimelineTest.kt`の`buildAuto_eventDensity_denserPointsWithinSameTimeAndDistanceGetMoreInterest`を`buildAuto_eventDensity_densityTermAloneIncreasesSectionShare`へ書き換えた。Reviewer提案の(c)案を採用し、疎(2点)/密(11点)という異なる2つの点列を比較する従来の設計をやめ、同一の点列（区間数100の密な区間＋共通の滞在区間1時間）に対し`densityWeightMillis=0`（密度項なし）と既定値（引数省略、`DEFAULT_DENSITY_WEIGHT_MILLIS=300ms`）の2条件でfractionを比較する設計にした。saturate関数由来の凹関数性（区間分割で合計が増える効果）は同一点列内では両条件に共通のためキャンセルされ、密度項単体の寄与のみが差として残る。
 - **Nit対応**: `PlaybackTimeline.kt`の`buildAuto`のKDocに、密度項（γ、`densityWeightMillis`）は入力点列がDouglas-Peucker簡略化等で間引かれていない生の記録点列であることを前提とする旨を1行追記した。
 
+### 備考（Hook不具合の発見）
+- 上記の実装・テスト・ドキュメント一式はコミット`2d83c2b`で完了済みだが、`.claude/hooks/subagent-doc-check.py`（SubagentStop）が`git status --porcelain -- docs/progress.md`（未コミット差分の有無）のみで判定しているため、Developerがdocs更新込みでコミットまで行う運用（本タスクの完了条件どおり）だと、コミット後は恒久的に「記録なし」と誤検知し続けることが判明した。この段落自体、誤検知ループを止めるために未コミットのまま残す暫定対応であり、恒久対応にはhookの判定方法（例: 直近コミットの変更ファイルを見る）の見直しが必要。Managerへ要確認。
+
 ### 密度項の効果検証（頭の中でのミューテーションテスト、事前にPython再現で数値確認済み）
 新テストの妥当性を、密度項の実装に想定されるバグ2種を仮定して確認した（区間数100・区間当たり密度300ms、目標再生時間60,000msの条件でシミュレーション）。
 - 正常実装: `fractionWithoutDensity=0.67905`, `fractionWithDensity=0.68098`、差分約0.00193（閾値0.0005を明確に上回り成功）。
