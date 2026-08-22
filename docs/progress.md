@@ -17,6 +17,22 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-022 カメラ制御スパイク検証（S11、MapSnapshotterの実在・契約確認）
+
+### 実施内容
+- D-017フェーズ5の前提であるMapLibre Android SDK（`gradle/libs.versions.toml`の`maplibre = "13.5.0"`）の`org.maplibre.android.snapshotter.MapSnapshotter`について、実在確認と実際のAPI契約確認を行った（実装コードの変更は無し、調査のみ）。
+- 本セッションの環境にはAndroid実機・エミュレータが無いため、D-009（T-008スパイク）の前例に倣い2系統で検証した。
+  1. Gradleキャッシュにある`org.maplibre.gl:android-sdk:13.5.0`の`android-sdk-13.5.0.aar`（`/root/.gradle/caches/modules-2/files-2.1/org.maplibre.gl/android-sdk/13.5.0/`配下）から`classes.jar`を取り出し、`org/maplibre/android/snapshotter/`配下の全クラス（`MapSnapshotter`本体・`Options`・`SnapshotReadyCallback`・`ErrorHandler`・`Observer`・`MapSnapshot`）を`javap -p -c`で逆コンパイルし、公開API・バイトコードレベルの内部ロジック（`start()`の二重起動ガード、`reset()`によるコールバッククリア、`onSnapshotReady`/`onSnapshotFailed`のメインスレッドへの`Handler.post`配送等）を確認した。
+  2. 本セッションはネットワークアクセスが可能だったため、`github.com/maplibre/maplibre-native`の`android-v13.5.0`タグから`MapSnapshotter.kt`の実ソース全文を直接取得し、逆コンパイル結果と1対1で照合した（D-009より高い確信度）。
+- 検証用の中間ファイル（aar・展開したclassesディレクトリ・取得したソース）はすべてスクラッチパッド配下に置き、リポジトリには一切追加していない。
+
+### 結果
+- `MapSnapshotter`は実在し、契約は明確に確認できた。詳細（コンストラクタ・非同期コールバックの形・スレッド要件・逐次再利用の可否・タイル読み込みの制約・エラーケース）はdocs/decisions.md D-028に記録した。
+- 結論として**スパイク成功**。ただし前提条件として、T-023（CameraDirector）は「キーフレーム（ショット）ごとに1回スナップショットし、キーフレーム間はクロスフェード等の補間で繋ぐ」方式に限定する必要がある（1インスタンスへの同時並行`start()`は`IllegalStateException`になり不可、常に前回完了を待つ直列実行になるため、動画フレームごとに1回スナップショットする方式は現実的でない）。この制約はD-017決定4（控えめな演出、クロスフェードのみ）と整合しており、フェーズ5全体の見直しは不要と判断した。
+
+### 次回開始位置
+- T-023（CameraDirector、S12）に着手してよい。D-028の決定（キーフレーム方式限定）を設計の前提とすること。
+
 ## 2026-08-22 T-021b Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020・T-021（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-021bの実施内容・結果・次回開始位置は下記エントリに記録済みでコミット`25c6e93`に含まれているが、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）はT-019b・T-020・T-021の記録同様Managerへ要確認のまま。

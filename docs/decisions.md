@@ -743,3 +743,38 @@
 ### 影響
 - 以降、`StateFlow`の同期的な即時更新と、それに付随する非同期処理の状態（ガード条件を含む）の更新タイミングがずれる設計を導入する場合、両者を同じタイミング（同一の同期区間）で更新するパターンを踏襲する。
 
+---
+
+## D-028: T-022スパイク検証の結果（MapSnapshotterは実在し契約も明確、ただし1フレーム1呼び出しは不可・キーフレーム方式が前提条件）
+
+- 日付: 2026-08-22
+- 状態: 採用
+
+### 背景
+- T-022のタスク指示は、D-017フェーズ5（S11〜S14、動画の自動追従・自動ズーム・都市間カメラ遷移）の前提となる`org.maplibre.android.snapshotter.MapSnapshotter`（画面非表示のヘッドレスな地図スナップショット取得API）が、本プロジェクトが使用するMapLibre Android SDK 13.5.0（`gradle/libs.versions.toml`の`maplibre = "13.5.0"`、`org.maplibre.gl:android-sdk`）に実在するか、実在する場合の実際のAPI契約を実装開始前に確認することを求めていた。失敗時はフェーズ5全体の見直しが判断ポイントとされていた。
+- 本セッションの環境にはAndroid実機・エミュレータが無い（T-002以降一貫した既知の制約）。D-009（T-008スパイク）の前例に倣い、(1) Gradleキャッシュにある`android-sdk-13.5.0.aar`の`classes.jar`を`javap -p -c`で逆コンパイルして公開API・バイトコードレベルの実装ロジックを確認し、(2) `github.com/maplibre/maplibre-native`の`android-v13.5.0`タグから`MapSnapshotter.kt`の実際のソースコード全文（`platform/android/MapLibreAndroid/src/main/java/org/maplibre/android/snapshotter/MapSnapshotter.kt`）を直接取得して照合した。本セッションはネットワークアクセスが可能であり、バイトコードとソースの両方で相互検証できた（D-009より高い確信度）。
+
+### 決定（スパイク検証で確認した事実）
+1. **実在確認**: `MapSnapshotter`・`MapSnapshotter.Options`・`MapSnapshotter.SnapshotReadyCallback`・`MapSnapshotter.ErrorHandler`・`MapSnapshotter.Observer`・`MapSnapshot`は全てSDK 13.5.0のaarに実在し、いずれもpublic API（`org/maplibre/android/snapshotter/`パッケージ）。
+2. **コンストラクタ・カメラ指定**: `MapSnapshotter(Context, Options)`。`Options(width, height)`に対し`withStyleBuilder(Style.Builder)`（`withStyle(uri)`・`withStyleJson(json)`は非推奨エイリアス）、`withCameraPosition(CameraPosition)`（`target: LatLng, zoom, tilt, bearing, roll, fov, padding`を持つ既存の`CameraPosition`クラスをそのまま利用可能、他画面と共通）、`withRegion(LatLngBounds)`、`withPadding(...)`、`withPixelRatio(...)`、`withLogo/withAttribution(Boolean)`をビルダーチェーンで指定する。width/heightは0不可（`require`で例外）。
+3. **非同期契約**: `start(callback: SnapshotReadyCallback, errorHandler: ErrorHandler? = null)`は非同期。`callback.onSnapshotReady(snapshot: MapSnapshot)`（`snapshot.bitmap`でBitmap取得）または`errorHandler.onError(reason: String)`が呼ばれる。両コールバックとも、実装内部で`Handler(Looper.getMainLooper()).post { ... }`により**呼び出しスレッドに関わらず必ずメインスレッドで**配送される（D-010が`MapLibreMap.snapshot()`について確立したのと同じ設計）。SDK側にタイムアウト機構は無く、D-010の`awaitSnapshot`と同様に呼び出し側で`withTimeout`によるタイムアウト実装が必須。
+4. **スレッド要件**: クラスに`@UiThread`アノテーションが付き、コンストラクタ・`start()`・`cancel()`・`setObserver()`・`getLayer()`/`getSource()`の冒頭で`ThreadUtils.checkThread("Mbgl-MapSnapshotter")`を呼ぶ。これは`Looper.myLooper() != Looper.getMainLooper()`の場合に`CalledFromWorkerThreadException`を投げるが、この判定自体は`ApplicationInfo.FLAG_DEBUGGABLE`（デバッグビルドか否か）で有効/無効が切り替わる実装（`ThreadUtils.init`参照）。設計意図としては呼び出し元はメインスレッド前提であり、リリースビルドで例外が出ないことに依存すべきではない。
+5. **繰り返し呼び出しの可否（最重要）**: `start()`は`check(this.callback == null) { "Snapshotter was already started" }`により、前回の`start()`が完了（`onSnapshotReady`/`onSnapshotFailed`いずれか）する前に再度呼ぶと`IllegalStateException`を投げる。一方、完了時に呼ばれる`reset()`が`callback`/`errorHandler`をnullへ戻すため、**1つの`MapSnapshotter`インスタンスを、前回の完了を待った上で逐次的（シーケンシャル）に使い回すことは可能**。さらに`setCameraPosition(CameraPosition)`・`setRegion(LatLngBounds)`・`setSize(Int, Int)`・`setStyleUrl/setStyleJson(String)`・`setPadding(...)`というnativeメソッドが用意されており、新規インスタンス生成なしで既存インスタンスのカメラ・サイズ・スタイルを差し替えて次の`start()`を呼ぶ設計が公式に想定されている。ただし**同時並行（1インスタンスへの複数の同時`start()`）は不可**であり、常に「前回完了を待つ→パラメータ変更→次を開始」という直列実行になる。
+6. **スタイル・タイル読み込み**: コンストラクタ内で`FileSource.getInstance(context)`（画面表示中の`MapView`と共有される同一のタイル/リソースキャッシュ機構）を使う。ネットワーク・オフラインキャッシュいずれの制約も画面表示中の地図と同一であり、Snapshotter専用の制約は追加されない。ただし各`start()`呼び出しはネイティブ側でスタイル解析・（未キャッシュなら）タイル取得・オフスクリーンGLレンダリングを行うフルパイプラインであり、`MapView`の初回表示と同等のコストがかかりうる（バイトコード・ソースからは実測のミリ秒値までは確認不可、既知の制約として残る）。
+7. **エラーケース**: スタイル読み込み失敗は`onDidFailLoadingStyle(reason)` → 内部で`onSnapshotFailed(reason)`に委譲され、`ErrorHandler.onError(reason)`が呼ばれる。それ以外のスナップショット生成失敗も同じ`onSnapshotFailed`経路。タイムアウトは無いためハング検知は呼び出し側の責務（決定3参照）。
+
+### 理由
+- 実機・エミュレータが無い環境制約下で、D-009同様バイトコード逆コンパイルとGitHub公開ソースの直接照合という2系統の独立した検証手段が一致したため、「クラスが存在し契約が明確である」という結論に高い確信度がある（D-009の水準を満たす）。
+- 決定5（逐次再利用可能、同時並行不可）はT-023（CameraDirector）・T-025（動画書き出しのカメラ制御）の実装コストに直結する最重要事項であり、「動画の毎フレーム（数百〜数千回）ごとに`MapSnapshotter`を呼ぶ」設計は、(a) 各呼び出しがスタイル解析・GLレンダリングを伴うフルパイプラインで軽くない、(b) 同時並行実行できず常に直列待機になる、という2点から現実的でないと判断した。
+- 一方、D-017決定4は既に「まず控えめな演出（ショット切替はクロスフェードのみ）」を採用しており、これは「限られた数のキーフレーム（ショット）ごとに1回スナップショットを取得し、静止画間をクロスフェードする」設計と整合する。この設計であれば`MapSnapshotter`呼び出し回数は動画のショット数（数十程度を想定、フレーム数ではない）に留まり、決定5の制約下でも実用的な範囲に収まる。
+
+### 決定（スパイク判定）
+- **スパイク成功**と判定する。`MapSnapshotter`は実在し、契約（コンストラクタ・非同期コールバック・スレッド要件・エラー処理）は明確に確認できた。成功の前提条件として、T-023（CameraDirector）の設計を「**キーフレーム（ショット）ごとに1回スナップショットし、キーフレーム間はクロスフェード等の補間で繋ぐ**」方式に限定することを、以降のフェーズ5作業の制約として明記する。
+
+### 影響
+- T-023（CameraDirector）は、連続的なカメラ軌道ではなく、有限個のキーフレーム（カメラ位置のリスト、各キーフレームに時刻・中心座標・ズーム等を持つ）を出力する設計とする。フレーム間の映像上の滑らかさは、既存のD-002/D-009静止画+`BitmapOverlay`パイプラインにおけるクロスフェード（隣接するキーフレームスナップショット間の透過度補間）で実現する。
+- T-025（動画書き出しのカメラ制御）は、`VideoExporter`が現在1回だけ呼んでいる`awaitSnapshot`（`MapLibreMap.snapshot()`ベース）を、キーフレーム数分だけ`MapSnapshotter`を逐次呼び出す方式に置き換える。1つの`MapSnapshotter`インスタンスを使い回し、`setCameraPosition`等で都度パラメータを変更してから`start()`を呼ぶ逐次ループとし、各呼び出しに決定3と同様のタイムアウト（D-010と同じ方針）を適用する。これによりtasks.md T-025の備考にある「地図を下地からBitmapOverlay内部へ移す方式変更」の技術的な裏付けが取れた。
+- T-024（画面再生でのカメラ追従）は、画面表示中の`MapLibreMap`インスタンスへ直接カメラ移動を指示する既存の仕組み（`MapSnapshotter`は不要）で実現するため、本スパイクの結論の影響を受けない。
+- フェーズ5全体の見直しは不要。D-017の計画（S11〜S15）どおり、T-023から着手してよい。
+- 実際のパフォーマンス実測（1回あたりの所要時間、キーフレーム数の上限目安）は実機・エミュレータが無いため未検証のまま残る既知の制約であり、実機入手後に確認することが望ましい。
+
