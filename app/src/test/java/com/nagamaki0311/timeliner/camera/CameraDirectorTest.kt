@@ -189,6 +189,108 @@ class CameraDirectorTest {
         assertTrue(wideRangeKeyframe.zoom < narrowRangeKeyframe.zoom - 3.0)
     }
 
+    // ---- 隣接キーフレーム窓の境界（D-029、T-023bで修正した境界二重カウント） ----
+
+    @Test
+    fun resolveWindowIndexRange_nonLastWindow_excludesPointExactlyAtWindowEnd() {
+        // windowEnd自身に一致するデータ時刻の点は、次の窓（境界を共有する側）だけに属するべきで、
+        // この窓（非最終窓）のtoIndexには含まれない（半開区間）ことを確認する。
+        val timestamps = longArrayOf(0L, 500L, 1_000L)
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        val (fromIndex, toIndex) = CameraDirector.resolveWindowIndexRange(
+            windowStart = 0L,
+            windowEnd = 500L,
+            isLastWindow = false,
+            timestampsMillis = timestamps,
+            timeline = timeline
+        )
+
+        // index0(t=0)のみを含み、windowEndちょうど(t=500, index1)は含まない。
+        assertEquals(0, fromIndex)
+        assertEquals(1, toIndex)
+    }
+
+    @Test
+    fun resolveWindowIndexRange_lastWindow_includesPointExactlyAtWindowEnd() {
+        // 最後の窓のみ、windowEnd自身（再生時間全体の最終点に対応するデータ時刻）を含む閉区間として扱う。
+        val timestamps = longArrayOf(0L, 500L, 1_000L)
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        val (fromIndex, toIndex) = CameraDirector.resolveWindowIndexRange(
+            windowStart = 500L,
+            windowEnd = 1_000L,
+            isLastWindow = true,
+            timestampsMillis = timestamps,
+            timeline = timeline
+        )
+
+        // index1(t=500)とindex2(t=1000、windowEndちょうど)の両方を含む。
+        assertEquals(1, fromIndex)
+        assertEquals(3, toIndex)
+    }
+
+    @Test
+    fun resolveWindowIndexRange_adjacentWindows_partitionAllPointsWithoutOverlapOrGap() {
+        // buildManual(speedMultiplier=1.0)は再生時刻=データ時刻-originの単純な線形写像になるため、
+        // 窓境界を任意のデータ時刻に厳密に一致させられる。t=0,100,...,1000の11点に対し、境界がちょうど
+        // t=300とt=700に一致する3つの隣接窓[0,300),[300,700),[700,1000]を直接指定して検証する。
+        val timestamps = LongArray(11) { it * 100L } // 0,100,...,1000
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        val windowBoundaries = listOf(0L, 300L, 700L, 1_000L) // 3つの窓: [0,300),[300,700),[700,1000]
+        val windowCount = windowBoundaries.size - 1
+        val ranges = (0 until windowCount).map { i ->
+            CameraDirector.resolveWindowIndexRange(
+                windowStart = windowBoundaries[i],
+                windowEnd = windowBoundaries[i + 1],
+                isLastWindow = i == windowCount - 1,
+                timestampsMillis = timestamps,
+                timeline = timeline
+            )
+        }
+
+        // 取りこぼし無し: 最初の窓はindex0から始まり、最後の窓はtimestamps.size(=11)で終わる。
+        assertEquals(0, ranges.first().first)
+        assertEquals(timestamps.size, ranges.last().second)
+        // 隙間・重複無し: 隣接する窓のtoIndexと次の窓のfromIndexが厳密に一致する。
+        for (i in 1 until ranges.size) {
+            assertEquals(
+                "窓${i - 1}のtoIndexと窓${i}のfromIndexが一致しません(重複または隙間がある可能性)",
+                ranges[i - 1].second, ranges[i].first
+            )
+        }
+        // 全ての点(0..10)がちょうど1つの窓に属することを、区間の和が[0,11)を隙間・重複なく覆うことで確認する。
+        val coveredIndices = ranges.flatMap { range -> (range.first until range.second).toList() }
+        assertEquals((0 until timestamps.size).toList(), coveredIndices)
+    }
+
+    @Test
+    fun computeKeyframes_pointExactlyOnSharedWindowBoundary_isNotDuplicatedAcrossKeyframes() {
+        // 東京(index0,1)→境界ちょうどの中間点(index2)→大阪(index3,4)という配置。
+        // speedMultiplier=1.0(再生時刻=データ時刻)・keyframeIntervalMillis=500Lにより、
+        // keyframeTimes=[0,500,1000]、窓境界(中点)は250msと750msになり、750msに対応するデータ時刻が
+        // ちょうどindex2(t=500)に一致する（境界共有ケースを再現する）。
+        val timestamps = longArrayOf(0L, 100L, 500L, 900L, 1_000L)
+        val latitudes = doubleArrayOf(35.6812, 35.6812, 35.0, 34.6937, 34.6937)
+        val longitudes = doubleArrayOf(139.7671, 139.7671, 137.0, 135.5023, 135.5023)
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        val keyframes = CameraDirector.computeKeyframes(
+            timestamps, latitudes, longitudes, timeline, keyframeIntervalMillis = 500L
+        )
+
+        assertEquals(3, keyframes.size)
+        // 先頭キーフレーム(窓=[0,250))は東京クラスタ(index0,1)のみを含み、境界点(index2)を含まない
+        // → 中心経度は東京付近(139.7671)のまま、大阪方向(135台)に引っ張られない。
+        assertEquals(139.7671, keyframes[0].centerLongitude, 1e-9)
+        // 2番目のキーフレーム(窓=[250,750))は境界点(index2)のみを含む(重複していれば東京/大阪の座標も
+        // 混ざって中心・ズームがずれる)ので、中心が境界点の座標と厳密に一致し、1点のみのため最大ズームになる。
+        assertEquals(35.0, keyframes[1].centerLatitude, 1e-9)
+        assertEquals(137.0, keyframes[1].centerLongitude, 1e-9)
+        assertEquals(CameraZoom.MAX_ZOOM, keyframes[1].zoom, 1e-9)
+    }
+
     private fun buildMultiDaySyntheticRoute(): Triple<LongArray, DoubleArray, DoubleArray> {
         // 3日分、1日あたり滞在(密なクラスタ)＋短い移動、という典型的なパターンを模した合成データ。
         val timestamps = mutableListOf<Long>()

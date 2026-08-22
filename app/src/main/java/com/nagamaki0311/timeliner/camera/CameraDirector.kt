@@ -25,10 +25,13 @@ import kotlin.math.PI
  *    再利用する。再生時刻（0〜総再生時間）を[keyframeIntervalMillis]間隔でサンプリングし、対応する
  *    データ時刻をキーフレームの基準時刻とすることで、「イベントが多い期間はキーフレームが密に、
  *    退屈な期間は疎に」という性質を追加のロジック無しで得る。
- * 2. **キーフレームごとのカメラ位置・ズーム**: 隣接キーフレーム間の中点で区切った時間窓（重複・隙間なく
- *    再生時間全体を分割する）に対応するデータ時刻範囲にあるルート点から[GeoBounds]でbboxを求め、
- *    その中心をカメラ中心、[CameraZoom]でそのbboxが収まる最小ズームレベルを求める。狭い範囲（滞在）は
- *    自動的に高いズーム、広い範囲（移動）は低いズームになる。
+ * 2. **キーフレームごとのカメラ位置・ズーム**: 隣接キーフレーム間の中点で区切った時間窓に対応するデータ
+ *    時刻範囲にあるルート点から[GeoBounds]でbboxを求め、その中心をカメラ中心、[CameraZoom]でそのbboxが
+ *    収まる最小ズームレベルを求める。狭い範囲（滞在）は自動的に高いズーム、広い範囲（移動）は低いズームに
+ *    なる。隣接する2つの窓は開始側のみ含む片側開区間（`[dataStart, dataEnd)`）として区切ることで、
+ *    共有境界（窓iの終端＝窓i+1の始端の同じデータ時刻）にちょうど一致する点が両方の窓に二重に含まれない
+ *    ようにする（D-029）。ただし最後の窓のみ`dataEnd`自身（再生時間全体の最終点）を含む閉区間として扱い、
+ *    最後の点が取りこぼされないようにする。
  */
 object CameraDirector {
 
@@ -93,16 +96,14 @@ object CameraDirector {
 
         return keyframeTimes.indices.map { index ->
             val t = keyframeTimes[index]
+            val isLastWindow = index == keyframeTimes.size - 1
             val windowStart = if (index == 0) 0L else (keyframeTimes[index - 1] + t) / 2
-            val windowEnd = if (index == keyframeTimes.size - 1) {
-                totalPlaybackMillis
-            } else {
-                (t + keyframeTimes[index + 1]) / 2
-            }
+            val windowEnd = if (isLastWindow) totalPlaybackMillis else (t + keyframeTimes[index + 1]) / 2
             buildKeyframe(
                 playbackMillis = t,
                 windowStart = windowStart,
                 windowEnd = windowEnd,
+                isLastWindow = isLastWindow,
                 timestampsMillis = timestampsMillis,
                 latitudes = latitudes,
                 longitudes = longitudes,
@@ -134,6 +135,7 @@ object CameraDirector {
         playbackMillis: Long,
         windowStart: Long,
         windowEnd: Long,
+        isLastWindow: Boolean,
         timestampsMillis: LongArray,
         latitudes: DoubleArray,
         longitudes: DoubleArray,
@@ -141,25 +143,50 @@ object CameraDirector {
         viewportWidthPx: Int,
         viewportHeightPx: Int
     ): CameraKeyframe {
-        val dataStart = timeline.dataTimeAtPlaybackMillis(windowStart)
-        val dataEnd = timeline.dataTimeAtPlaybackMillis(windowEnd)
-        var fromIndex = lowerBound(timestampsMillis, dataStart)
-        var toIndex = upperBound(timestampsMillis, dataEnd)
-        if (fromIndex >= toIndex) {
-            // 窓の中に厳密に収まる点が1つも無い退化ケース（大きな移動の途中で記録点が疎な区間等）。
-            // 窓の直前・直後の点（移動の両端）にブラケットすることで、その移動全体が見えるbboxにする
-            // （単に最も近い1点へフォールバックすると「都市間の自然なカメラ遷移」要件を満たせないため）。
-            val prevIndex = (lowerBound(timestampsMillis, dataStart) - 1).coerceAtLeast(0)
-            val nextIndex = upperBound(timestampsMillis, dataEnd).coerceAtMost(timestampsMillis.size - 1)
-            fromIndex = prevIndex
-            toIndex = nextIndex + 1
-        }
+        val (fromIndex, toIndex) = resolveWindowIndexRange(
+            windowStart, windowEnd, isLastWindow, timestampsMillis, timeline
+        )
 
         val bounds = GeoBounds.compute(latitudes, longitudes, fromIndex, toIndex)
         val centerLatitude = (bounds.minLatitude + bounds.maxLatitude) / 2.0
         val centerLongitude = (bounds.minLongitude + bounds.maxLongitude) / 2.0
         val zoom = CameraZoom.zoomToFitBounds(bounds, viewportWidthPx, viewportHeightPx)
         return CameraKeyframe(playbackMillis, centerLatitude, centerLongitude, zoom)
+    }
+
+    /**
+     * 再生時刻の時間窓[windowStart]〜[windowEnd]に対応するデータ時刻範囲にある[timestampsMillis]
+     * （時刻昇順）のインデックス範囲を`[fromIndex, toIndex)`半開区間（[GeoBounds.compute]と同じ規約）
+     * のPairで返す。開始側（`dataStart`）は含み、終了側（`dataEnd`）は含まない片側開区間とすることで、
+     * 隣接する2つの窓の共有境界（窓iの`windowEnd`＝窓i+1の`windowStart`、変換後は同じデータ時刻になる）
+     * にちょうど一致する点が両方の窓に二重に含まれないようにする（D-029）。ただし[isLastWindow]が
+     * trueの場合のみ`dataEnd`自身も含む閉区間として扱い、再生時間全体の最後の点を取りこぼさないようにする。
+     *
+     * 窓の中に厳密に収まる点が1つも無い退化ケース（大きな移動の途中で記録点が疎な区間等）では、
+     * 窓の直前・直後の点（移動の両端）にブラケットした範囲を返すことで、その移動全体が見えるbboxにする
+     * （単に最も近い1点へフォールバックすると「都市間の自然なカメラ遷移」要件を満たせないため）。
+     */
+    internal fun resolveWindowIndexRange(
+        windowStart: Long,
+        windowEnd: Long,
+        isLastWindow: Boolean,
+        timestampsMillis: LongArray,
+        timeline: PlaybackTimeline
+    ): Pair<Int, Int> {
+        val dataStart = timeline.dataTimeAtPlaybackMillis(windowStart)
+        val dataEnd = timeline.dataTimeAtPlaybackMillis(windowEnd)
+        val fromIndex = lowerBound(timestampsMillis, dataStart)
+        val toIndex = if (isLastWindow) {
+            upperBound(timestampsMillis, dataEnd)
+        } else {
+            lowerBound(timestampsMillis, dataEnd)
+        }
+        if (fromIndex >= toIndex) {
+            val prevIndex = (fromIndex - 1).coerceAtLeast(0)
+            val nextIndex = upperBound(timestampsMillis, dataEnd).coerceAtMost(timestampsMillis.size - 1)
+            return prevIndex to (nextIndex + 1)
+        }
+        return fromIndex to toIndex
     }
 
     /** [array]（昇順ソート済み）中で`array[index] >= value`となる最初のindexを返す（無ければ`array.size`）。 */
@@ -206,7 +233,15 @@ internal object CameraZoom {
 
     private val LN2 = ln(2.0)
 
-    /** [bounds]が[viewportWidthPx] x [viewportHeightPx]のビューポートに収まる最小ズームレベルを返す。 */
+    /**
+     * [bounds]が[viewportWidthPx] x [viewportHeightPx]のビューポートに収まる最小ズームレベルを返す。
+     *
+     * `longitudeDiff < 0.0`の分岐は経度180度（日付変更線）をまたぐbboxの補正を意図しているが、
+     * [bounds]の元になる[GeoBounds]（新規範囲指定版・既存全点版とも）自体が単純min/maxでラップアラウンドを
+     * 考慮しないため`longitudeDiff`が負になることは実際には起こらず、現状この補正は到達しないデッドコードで
+     * 日付変更線をまたぐbboxのズームは正しく計算されない（`GeoBounds`の日付変更線非対応というT-006以来の
+     * 既知の制約に起因、D-007・D-029参照）。
+     */
     fun zoomToFitBounds(bounds: GeoBounds.Bounds, viewportWidthPx: Int, viewportHeightPx: Int): Double {
         val latFraction = (latitudeRadiansOnMercator(bounds.maxLatitude) -
             latitudeRadiansOnMercator(bounds.minLatitude)) / PI
