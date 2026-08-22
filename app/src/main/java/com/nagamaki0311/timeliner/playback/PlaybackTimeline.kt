@@ -113,6 +113,10 @@ class PlaybackTimeline private constructor(
          * 加算し、記録点が密な区間ほど関心度が高くなるようにする。
          * 総再生時間は[targetDurationMillis]に正規化する（丸め誤差を吸収するため最終点は必ず一致させる）。
          *
+         * 密度項（γ、[densityWeightMillis]）は区間数に比例して加算されるため、[timestampsMillis]等が
+         * Douglas-Peucker簡略化等で間引かれていない生の記録点列であることを前提とする。簡略化後の
+         * 点列を渡すと元々点が密だった区間の「密度」が正しく反映されなくなる。
+         *
          * @param timestampsMillis 時刻昇順の点列（[latitudes]/[longitudes]と同じ長さ）。
          */
         fun buildAuto(

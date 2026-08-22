@@ -17,6 +17,29 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-019b T-019レビュー指摘対応（イベント密度テストのsaturate混同、KDoc追記）
+
+### 実施内容
+D-025決定1・3に基づき、T-019（コミット613eef9）のレビュー指摘（Medium 1件・Nit 1件）を修正した。
+
+- **Medium対応**: `PlaybackTimelineTest.kt`の`buildAuto_eventDensity_denserPointsWithinSameTimeAndDistanceGetMoreInterest`を`buildAuto_eventDensity_densityTermAloneIncreasesSectionShare`へ書き換えた。Reviewer提案の(c)案を採用し、疎(2点)/密(11点)という異なる2つの点列を比較する従来の設計をやめ、同一の点列（区間数100の密な区間＋共通の滞在区間1時間）に対し`densityWeightMillis=0`（密度項なし）と既定値（引数省略、`DEFAULT_DENSITY_WEIGHT_MILLIS=300ms`）の2条件でfractionを比較する設計にした。saturate関数由来の凹関数性（区間分割で合計が増える効果）は同一点列内では両条件に共通のためキャンセルされ、密度項単体の寄与のみが差として残る。
+- **Nit対応**: `PlaybackTimeline.kt`の`buildAuto`のKDocに、密度項（γ、`densityWeightMillis`）は入力点列がDouglas-Peucker簡略化等で間引かれていない生の記録点列であることを前提とする旨を1行追記した。
+
+### 密度項の効果検証（頭の中でのミューテーションテスト、事前にPython再現で数値確認済み）
+新テストの妥当性を、密度項の実装に想定されるバグ2種を仮定して確認した（区間数100・区間当たり密度300ms、目標再生時間60,000msの条件でシミュレーション）。
+- 正常実装: `fractionWithoutDensity=0.67905`, `fractionWithDensity=0.68098`、差分約0.00193（閾値0.0005を明確に上回り成功）。
+- 変異1（密度項の加算が抜けている想定）: 差分は0.0（`densityWeightMillis`を渡しても効果が出ないため）→アサーション失敗（テストは正しく検知する）。
+- 変異2（符号が逆になっている想定、`-densityWeightMillis`）: 差分は約-0.00195（負）→アサーション失敗（テストは正しく検知する）。
+- 区間数を増やすほど密度項の相対寄与が線形項（α×dt・β×distance、区間分割してもほぼ一定）に対し優勢になる（区間数に比例して積み上がるため）ことを利用し、区間数100で十分な検出力（ノイズとなりうるLong丸め誤差1〜2ms程度に対し、差分は約116ms相当）を確保した。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（`PlaybackTimelineTest`17件全て成功、新テストは差分0.0019 > 0.0005を確認）。
+- `./gradlew assembleDebug`が成功した。
+- 既存テスト（`buildAuto_stationarySaturation_longStayGetsFarLessThanLinearShare`・`buildAuto_movementSaturation_singleLongSegmentGetsLessShareThanSplitEquivalent`、頭打ちの検証）は無変更で成功。
+
+### 次回開始位置
+- T-020（560日規模の実データ対応: ポリライン分断と軌跡の描き分け、S9）にD-017の計画に従って着手する。
+
 ## 2026-08-22 T-019 560日規模の実データ対応: 関心度モデルの改善（S8）
 
 ### 実施内容

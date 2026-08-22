@@ -148,35 +148,47 @@ class PlaybackTimelineTest {
     }
 
     @Test
-    fun buildAuto_eventDensity_denserPointsWithinSameTimeAndDistanceGetMoreInterest() {
-        // 同じ実時間(300秒)・同じ総移動距離(3km)の区間を、疎(2点=1区間)と密(11点=10区間)で構築し、
-        // 比較の基準として共通の滞在区間(1時間)を後ろに挟む。点の密度自体が関心度に寄与するなら、
-        // 密な方が区間の再生時間シェアが大きくなるはずである。
+    fun buildAuto_eventDensity_densityTermAloneIncreasesSectionShare() {
+        // D-025決定1（Reviewer提案(c)案）: 同じ点列（実時間300秒・総距離3km・区間数100の密な区間、
+        // 後ろに共通の滞在区間1時間を挟む）に対し、densityWeightMillis=0（密度項なし）と既定値
+        // （密度項あり）の2条件でfractionを比較する。saturate関数由来の凹関数性（区間分割によって
+        // 合計が増える効果）は同じ点列内で条件間に共通のためキャンセルされ、密度項単体の寄与のみが
+        // 差として残る（旧テストは疎密で異なる点列を比較していたためsaturate由来の効果に支配され、
+        // 密度項を無効化しても同じ結論になってしまっていた）。
+        val pointCount = 101 // 区間数100の密な区間（区間数が多いほど密度項の相対寄与が大きくなる）
         val totalDurationMillis = 300_000L // 5分
         val totalDistanceDegreesLat = 0.027 // 緯度1度 ≈ 111km、0.027度 ≈ 約3km
         val referenceStayMillis = 3_600_000L
 
-        fun sectionPlaybackFraction(pointCount: Int): Double {
-            val sectionTimestamps = LongArray(pointCount) { i -> totalDurationMillis * i / (pointCount - 1) }
-            val sectionLatitudes = DoubleArray(pointCount) { i -> 35.0 + totalDistanceDegreesLat * i / (pointCount - 1) }
-            val sectionLongitudes = DoubleArray(pointCount) { 139.0 }
+        val sectionTimestamps = LongArray(pointCount) { i -> totalDurationMillis * i / (pointCount - 1) }
+        val sectionLatitudes = DoubleArray(pointCount) { i -> 35.0 + totalDistanceDegreesLat * i / (pointCount - 1) }
+        val sectionLongitudes = DoubleArray(pointCount) { 139.0 }
+        val timestamps = sectionTimestamps + (sectionTimestamps.last() + referenceStayMillis)
+        val latitudes = sectionLatitudes + sectionLatitudes.last()
+        val longitudes = sectionLongitudes + sectionLongitudes.last()
 
-            val timestamps = sectionTimestamps + (sectionTimestamps.last() + referenceStayMillis)
-            val latitudes = sectionLatitudes + sectionLatitudes.last()
-            val longitudes = sectionLongitudes + sectionLongitudes.last()
-
-            val timeline = PlaybackTimeline.buildAuto(timestamps, latitudes, longitudes, targetDurationMillis = 60_000L)
+        fun sectionPlaybackFraction(densityWeightMillis: Double?): Double {
+            val timeline = if (densityWeightMillis == null) {
+                // 明示的に指定せず既定値（DEFAULT_DENSITY_WEIGHT_MILLIS）を使う
+                PlaybackTimeline.buildAuto(timestamps, latitudes, longitudes, targetDurationMillis = 60_000L)
+            } else {
+                PlaybackTimeline.buildAuto(
+                    timestamps, latitudes, longitudes,
+                    targetDurationMillis = 60_000L,
+                    densityWeightMillis = densityWeightMillis
+                )
+            }
             val sectionEndPlaybackMillis = timeline.playbackMillisAtDataTime(sectionTimestamps.last())
             return sectionEndPlaybackMillis.toDouble() / timeline.totalPlaybackMillis().toDouble()
         }
 
-        val sparseFraction = sectionPlaybackFraction(pointCount = 2)
-        val denseFraction = sectionPlaybackFraction(pointCount = 11)
+        val fractionWithoutDensity = sectionPlaybackFraction(densityWeightMillis = 0.0)
+        val fractionWithDensity = sectionPlaybackFraction(densityWeightMillis = null)
 
         assertTrue(
-            "同じ実時間・同じ総移動距離でも、記録点が密な区間の方が再生時間シェアは大きいはず: " +
-                "sparseFraction=$sparseFraction, denseFraction=$denseFraction",
-            denseFraction > sparseFraction
+            "同じ点列でも、密度項を有効にした方が区間の再生時間シェアは明確に大きいはず: " +
+                "fractionWithoutDensity=$fractionWithoutDensity, fractionWithDensity=$fractionWithDensity",
+            fractionWithDensity - fractionWithoutDensity > 0.0005
         )
     }
 
