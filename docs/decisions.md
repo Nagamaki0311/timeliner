@@ -716,3 +716,30 @@
 ### 影響
 - 3（`Style`の共有可変状態）は、将来「画面再生とエクスポートの同時実行」という設計変更（例: エクスポート中も画面プレビューを更新し続ける等）が入る場合に再検討が必要になる可能性がある。その際はdocs/tasks.mdバックログを参照する。
 
+---
+
+## D-027: T-021レビュー指摘への対応方針（期間切替直後の詳細ウィンドウが新期間の境界を誤って使う競合）
+
+- 日付: 2026-08-22
+- 状態: 採用
+
+### 背景
+- T-021（詳細ウィンドウの遅延ロード、コミット`5c37d25`）のレビューで、ReviewerがMedium 1件・Low 2件を検出した。
+  1. （Medium/CONFIRMED、コルーチンでの再現テストにより実証済み）`selectPeriod`は`_selectedPeriod.value`を同期的に即時更新するが、`isLongPeriodSelected`・`_routePoints`・`loadedDetailWindow`（詳細ウィンドウ機構の状態）は`loadRoute`のIO・計算完了後まで更新されない。この間に旧期間の再生ループが`dataTimeMillis`を更新すると、`onPlaybackDataTimeChanged`は旧期間の`isLongPeriodSelected`/`loadedDetailWindow`で判定するが、内部で呼ぶ`scheduleDetailWindowLoad`は`_selectedPeriod.value`をその時点で読み直すため、既に切り替わった新期間を境界としてしまい、まだ更新されていない旧期間の`_routePoints.value`へ境界不整合な詳細データをmergeして画面描画（`_displayRoutePoints`）へ書き込む可能性がある。`loadRoute`完了時に`resetDetailWindow`が無条件で上書きするため自己修復し、データ損失・クラッシュには至らない一時的な描画不整合。
+  2. （Low/CONFIRMED、実害なし）`DetailWindowTest.kt`に、base点がdetailの開始/終了時刻と完全一致する境界ケースの明示テストが無い。実装自体は追加検証で正しいことを確認済み。
+  3. （Low/PLAUSIBLE）長期間再生中、`needsReload`判定が再生フレーム毎（最大60Hz）にメインスレッドで走る。処理自体は軽量で実測での性能劣化は未確認。
+
+### 決定
+1. 1（Medium）・2（Low、対応コストが極めて小さいためあわせて実施）を修正する（T-021b）。
+   - `selectPeriod`内で`_selectedPeriod.value`を更新するのと同期的に、詳細ウィンドウ機構を無効化するトークン（例: 世代カウンタのインクリメント、または`isLongPeriodSelected`の即時リセット）も更新し、`scheduleDetailWindowLoad`が`_selectedPeriod.value`を後から読み直して新期間を誤って捕捉しないようにする。
+   - `DetailWindowTest.kt`に、base点がdetailの開始/終了時刻と完全一致する境界ケースのテストを1件追加する。
+2. 3（Low/PLAUSIBLE）は対応せず、docs/tasks.mdバックログへ記録するに留める。
+
+### 理由
+- 1は自己修復するとはいえ、再生中に一瞬でも境界不整合な軌跡が画面に表示されうる設計上のギャップであり、AGENTS.md原則7（バグは根本原因を直す）に照らし放置すべきではないと判断した。修正コストも「期間切替時に同期的にトークンを進める」という限定的な変更で済む。
+- 2は実害が無いが、対応コストがテスト1件追加のみのためT-021bに含める。
+- 3は実測での性能劣化が確認できておらず、本開発環境では実機検証もできないため、推測のみでの最適化はAGENTS.md原則1（理解してから作る）に反すると判断し見送る。
+
+### 影響
+- 以降、`StateFlow`の同期的な即時更新と、それに付随する非同期処理の状態（ガード条件を含む）の更新タイミングがずれる設計を導入する場合、両者を同じタイミング（同一の同期区間）で更新するパターンを踏襲する。
+
