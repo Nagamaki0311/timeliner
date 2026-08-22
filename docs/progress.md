@@ -17,6 +17,27 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-017b T-017レビュー指摘の修正（ALL選択中のインポートで境界が再解決されない、起動時レース条件）
+
+### 実施内容
+D-023決定1に基づき、T-017（コミット`3733cca`）のレビューで検出されたHigh 1件・Medium 1件を修正した（Low 2件は決定2により対応不要と判断済み、変更なし）。
+
+- **High（ALL選択中のインポートで境界が再解決されない）**: `TimelineViewModel.commitPreparedImport`成功時、`repository.commitImport`直後に「ユーザーが全期間を意図しているか」を確認し、意図している場合のみ`resolveAllPeriod()`相当を再実行して`_selectedPeriod`・`loadRoute`を更新するようにした。DAY/WEEK/MONTH/YEAR/CUSTOMを明示選択中はこの再解決をスキップし上書きしない。
+  - 「ユーザーが全期間を意図しているか」は`_selectedPeriod.value.type == PeriodType.ALL`という型の比較だけでは判定できない。DBが空の初回起動時、`resolveAllPeriod()`は今日の`PeriodType.DAY`へフォールバックするが、この`DAY`は「全期間を意図した暫定フォールバック」であり、ユーザーが明示選択した`DAY`とは意味が異なる（両者は型だけからは区別できない、タスク指示で明示された論点）。この区別のため、型とは独立に「全期間を意図しているか」を保持する`isAllSelected: Boolean`フラグを新設した。
+- **Medium（起動時の非同期ALL解決とユーザー操作の競合）**: `TimelineViewModel.init`が起動する`resolveAllPeriod()`（`queryDateRange`のIO待ち）の完了前にユーザーが`selectPeriod`を呼んだ場合、`init`側の代入が後からユーザーの選択を上書きしないよう、世代カウンタガードを追加した。`selectPeriod`は明示選択のたびに世代を進め、進行中（または今後resumeする）非同期解決は自分の世代が最新でなければ結果を`_selectedPeriod`へ反映しない。
+- 上記2つの状態（`isAllSelected`フラグ、世代カウンタ）は新設の`PeriodResolutionGate`（`app/src/main/java/com/nagamaki0311/timeliner/ui/PeriodResolutionGate.kt`）へ切り出し、`TimelineViewModel`本体からは分離した。`TimelineViewModel`自体は`ViewModel`基底クラス・`TimelineRepository`のAndroid API依存で実`Context`無しにJVM単体テストからインスタンス化できない制約（D-020と同じ）があるため、`RouteOverviewCache`（D-020）・`PlaybackController`の`rebuildGeneration`（D-019）と同じ「世代カウンタで古い非同期結果の書き戻しを防ぐ」パターンをDB非依存のクラスへ独立させ、JVM単体テストから直接検証できるようにした。
+  - `init`・`selectAllPeriod`・インポート成功時（`commitPreparedImport`）の3箇所は、共通の`resolveAndApplyAllPeriod()`（`PeriodResolutionGate.beginResolution()`→`resolveAllPeriod()`→`isCurrent()`確認→反映）へ集約した。
+- `app/src/test/java/com/nagamaki0311/timeliner/ui/PeriodResolutionGateTest.kt`を新設し、`PeriodResolutionGate`を直接インスタンス化して以下を検証した（9件）: 既定値が全期間であること、フォールバック解決だけでは`isAllSelected`がtrueのままであること（High修正の区別ロジック）、明示選択で`isAllSelected`がfalseになること、解決中の明示選択がその解決の世代を無効化すること、複数回の`beginResolution`で最新世代のみが有効であること、そして`RouteOverviewCacheTest`と同じ`delay`+`runBlocking`パターンで「initの遅延解決がユーザーの選択を後から上書きしない」ことを実際の非同期実行で検証するテスト（Medium修正の中心）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（新設`PeriodResolutionGateTest`9件を含め、全テストスイートで失敗0）。
+- `./gradlew assembleDebug`が成功した。
+- `TimelineViewModel.selectPeriod`/`selectAllPeriod`の公開シグネチャは変更していないため、呼び出し元（`TimelineScreen.kt`・`PeriodSelector.kt`）への配線変更は不要（grepで呼び出し箇所を確認済み）。
+- テストで検証しきれない部分: `TimelineViewModel`本体（`commitPreparedImport`が実際に`periodResolutionGate.isAllSelected`を見て`resolveAndApplyAllPeriod()`を呼ぶ配線、`init`/`selectPeriod`/`selectAllPeriod`からの実際の呼び出し）は、上記のAndroid API依存の制約によりJVM単体テストで直接実行できない。並行性ロジックの正しさは`PeriodResolutionGate`単体で検証し、`TimelineViewModel`側は配線がロジックの契約（`beginResolution`→`isCurrent`確認→反映、`isAllSelected`に応じた再解決要否）通りであることをコードレビューで確認するに留めた。実機/エミュレータでのUIテスト（インポート→ALL再表示の目視確認、期間タブ連打時のちらつき無し確認）は本タスクのサンドボックス環境では未実施。
+
+### 次回開始位置
+- 次はdocs/tasks.mdのT-018（再生時間選択肢の変更、S7）。
+
 ## 2026-08-21 T-017 560日規模の実データ対応: 全期間の期間種別（S6）
 
 ### 実施内容

@@ -127,21 +127,28 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private var exportJob: Job? = null
 
     /**
+     * 「ユーザーが全期間（[PeriodType.ALL]）を意図しているか」の状態と、非同期な全期間解決と
+     * ユーザー操作の競合を防ぐ世代ガードを保持する（docs/decisions.md D-023決定1・決定2）。
+     */
+    private val periodResolutionGate = PeriodResolutionGate()
+
+    /**
      * アプリ起動時のオンスクリーン初期表示期間は全期間（[PeriodType.ALL]）とする（docs/decisions.md D-017決定1）。
      * DBに実在する最古日〜最新日は[TimelineRepository.queryDateRange]で非同期に解決する必要があるため、
      * [_selectedPeriod]の初期値はいったん暫定（今日の[PeriodType.DAY]、データ未取込の初回起動時と同じフォールバック）
-     * にし、解決でき次第[PeriodType.ALL]へ差し替える（[resolveAllPeriod]）。
+     * にし、解決でき次第[PeriodType.ALL]へ差し替える（[resolveAndApplyAllPeriod]）。
      */
     init {
-        viewModelScope.launch {
-            val period = resolveAllPeriod()
-            _selectedPeriod.value = period
-            loadRoute(period)
-        }
+        viewModelScope.launch { resolveAndApplyAllPeriod() }
     }
 
-    /** 期間を切り替え、対応するルートデータを読み込み直す（docs/tasks.md T-006）。 */
+    /**
+     * 期間を切り替え、対応するルートデータを読み込み直す（docs/tasks.md T-006）。
+     * [periodResolutionGate]へユーザーの明示選択を伝え、進行中（または今後resumeする）全期間解決が
+     * この選択を後から上書きしないようにする（docs/decisions.md D-023決定2）。
+     */
     fun selectPeriod(period: Period) {
+        periodResolutionGate.selectExplicit()
         _selectedPeriod.value = period
         viewModelScope.launch { loadRoute(period) }
         enforceSpeedModeConstraint(period.type)
@@ -153,11 +160,24 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      */
     fun selectAllPeriod() {
         viewModelScope.launch {
-            val period = resolveAllPeriod()
-            _selectedPeriod.value = period
-            loadRoute(period)
-            enforceSpeedModeConstraint(period.type)
+            resolveAndApplyAllPeriod()?.let { enforceSpeedModeConstraint(it.type) }
         }
+    }
+
+    /**
+     * [resolveAllPeriod]で全期間を解決し、解決完了時点で依然として最新の要求であれば
+     * （[PeriodResolutionGate.isCurrent]）[_selectedPeriod]・[loadRoute]へ反映する。
+     * 解決中に[selectPeriod]でユーザーが別の期間へ切り替えていた場合は反映せず`null`を返す
+     * （docs/decisions.md D-023決定2）。[init]・[selectAllPeriod]・インポート成功時（[commitPreparedImport]）の
+     * 3箇所から呼ばれる共通経路。
+     */
+    private suspend fun resolveAndApplyAllPeriod(): Period? {
+        val generation = periodResolutionGate.beginResolution()
+        val period = resolveAllPeriod()
+        if (!periodResolutionGate.isCurrent(generation)) return null
+        _selectedPeriod.value = period
+        loadRoute(period)
+        return period
     }
 
     /**
@@ -427,6 +447,12 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
             val result = withContext(Dispatchers.IO) { repository.commitImport(prepared) }
             // 新しいdays行が追加された可能性があるため、次回アクセス時にRouteOverviewを再構築させる（docs/tasks.md T-014）。
             invalidateRouteOverview()
+            // ユーザーが全期間（ALL）を意図している場合、インポートで拡張された日付範囲を反映するため
+            // 全期間の境界を再解決する。DAY/WEEK/MONTH/YEAR/CUSTOMを明示選択中の場合は上書きしない
+            // （docs/decisions.md D-023決定1）。
+            if (periodResolutionGate.isAllSelected) {
+                resolveAndApplyAllPeriod()
+            }
             _importState.value = ImportUiState.Success(result)
         } catch (e: CancellationException) {
             throw e
