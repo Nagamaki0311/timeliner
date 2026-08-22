@@ -62,6 +62,9 @@
 ## バックログ（未着手・優先度未確定）
 
 - `PlaybackTimeline.buildAuto`の`movementSaturationMeters`既定値（5km）が、高速道路・新幹線等のGPSサンプリング間隔が疎になる正当な高速移動区間を過剰に圧縮している可能性（T-019レビューLow/PLAUSIBLE、実データ・実機での体感検証ができない本環境の制約により見送り。D-025参照。実データでの体感フィードバックが得られ次第見直す）
+- `RouteFrameRenderer.drawRoute`の点数不一致時フォールバックが現行呼び出し元では到達不能（T-020レビューLow、実害なし見送り。D-026参照）
+- `RouteFrameRenderer.trimByProgress`の時刻補間で`Long×Float`により理論上の精度損失（T-020レビューLow/Nit、実測誤差は数ms程度で既存閾値へ無影響のため見送り。D-026参照）
+- `RouteFrameRenderer.Style`の`pastRoutePath`等が`DEFAULT_STYLE`シングルトン経由で画面再生・動画書き出し間の共有可変状態になる件（T-020レビューLow/PLAUSIBLE、既存の`routePath`/`routePaint`と同種のリスクで本タスク固有ではないため見送り。画面再生とエクスポートの同時実行という設計変更が入る場合に再検討。D-026参照）
 - 実データ（実際のTimelineエクスポートファイル）でのパーサ検証。ユーザーから個人情報を伏せたサンプル提供を受けられる場合に着手（D-002参照）
 - rawSignalsへの対応（D-002で v1スコープ外と決定。Records.json本体はD-004によりv1スコープに含めることへ変更済み）
 - TrackCleaner.removeSpeedSpikesが点列の先頭・末尾を判定対象外とする構造的な限界への対応（T-004レビューLow、実運用での発生可能性が低いため見送り）
