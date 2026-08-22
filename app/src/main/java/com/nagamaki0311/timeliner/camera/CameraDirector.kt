@@ -124,9 +124,10 @@ object CameraDirector {
      * [keyframes]が空の場合は-1を返す。
      *
      * 「最も近いキーフレーム」という基準は、[computeKeyframes]内部の窓分割（隣接キーフレームの中点で
-     * 区切った時間窓）と等価になる。中点はちょうど2つのキーフレームの中間であるため、ある再生時刻が
-     * どちらのキーフレームに近いかで判定することは、その時刻がどちらの窓に属するかで判定することと
-     * 同じ結果になる。
+     * 区切った時間窓）と真に等価になる（docs/decisions.md D-031）。境界ミリ秒ちょうど
+     * （[playbackMillis]が隣接キーフレームの中点に厳密に一致する場合）は後のキーフレームを選ぶ。これは
+     * [resolveWindowIndexRange]の窓所有権が共有境界を後の窓（`lowerBound`ベースの片側開区間）に
+     * 割り当てる規約と一致させるための選択で、単なる同点タイブレークの好みではない。
      */
     fun currentKeyframeIndex(keyframes: List<CameraKeyframe>, playbackMillis: Long): Int {
         if (keyframes.isEmpty()) return -1
@@ -139,9 +140,8 @@ object CameraDirector {
         }
         if (lo == 0) return 0
         if (lo == keyframes.size) return keyframes.size - 1
-        val previousGap = playbackMillis - keyframes[lo - 1].playbackMillis
-        val nextGap = keyframes[lo].playbackMillis - playbackMillis
-        return if (previousGap <= nextGap) lo - 1 else lo
+        val midpoint = (keyframes[lo - 1].playbackMillis + keyframes[lo].playbackMillis) / 2
+        return if (playbackMillis < midpoint) lo - 1 else lo
     }
 
     /**

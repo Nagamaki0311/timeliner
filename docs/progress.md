@@ -2,6 +2,22 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-22 T-024b T-024レビュー指摘の修正（currentKeyframeIndexのタイブレークがcomputeKeyframesの窓分割と等価にならない、D-031）
+
+### 実施内容
+- D-031決定1に従い、T-024（コミット`b7ef8c5`）のレビューで検出されたMedium 1件を`app/src/main/java/com/nagamaki0311/timeliner/camera/CameraDirector.kt`の`currentKeyframeIndex`で修正した。
+- タイブレークを、距離比較（`previousGap <= nextGap`で同点は前のキーフレームを優先）から、隣接キーフレームの中点との比較（`playbackMillis < (keyframes[lo-1].playbackMillis + keyframes[lo].playbackMillis) / 2`なら前、そうでなければ後）へ変更した。境界ミリ秒ちょうど（`playbackMillis == midpoint`）は後のキーフレームを選ぶ。これは`resolveWindowIndexRange`（`computeKeyframes`が使う窓所有権の解決関数）が共有境界を`lowerBound`ベースの片側開区間で後の窓に割り当てる規約（D-029/D-030）と一致させるための選択で、Reviewer提案(b)案どおり。
+- `currentKeyframeIndex`のKDocを、「数学的に等価」という従来の（境界ミリ秒での不一致を見落としていた）主張から、境界ミリ秒での丸め方向まで含めて`resolveWindowIndexRange`の窓所有権規約と真に一致することを明記する記述へ更新した。
+- 既存テスト`currentKeyframeIndex_exactlyAtMidpoint_prefersEarlierKeyframe`は、新しい挙動（境界ミリ秒ちょうどは後のキーフレームを選ぶ）に合わせて`currentKeyframeIndex_exactlyAtMidpoint_prefersLaterKeyframe`へ改名し、期待値を`0`→`1`へ修正した。
+- 新規テスト`currentKeyframeIndex_matchesResolveWindowIndexRangeOwnership_acrossVariousKeyframeLayouts`を追加した。複数のキーフレーム時刻レイアウト（均等間隔・不均等間隔・2点のみ）それぞれについて、(1) 全データ点（timestamps配列の各時刻）で`currentKeyframeIndex`の結果が`resolveWindowIndexRange`が計算する窓所有インデックス範囲と一致すること、(2) データ点に一致しない窓境界ミリ秒（隣接キーフレームの中点）ちょうどでも、`resolveWindowIndexRange`の片側開区間規約（共有境界は後の窓に属する）どおり`currentKeyframeIndex`が後の窓を選ぶこと、の両方を検証する。なお「隣接キーフレーム間隔が極端に短い（1ms差等）場合に`computeKeyframes`自身の窓境界計算が整数除算により幅0の窓を生む」という別種の（本タスクのスコープ外の）既知の潜在的エッジケースがあることを検証中に確認したため、そのような不自然に近接したレイアウトはテスト対象から除外した（本タスクは`currentKeyframeIndex`のタイブレーク方式のみが対象で、`computeKeyframes`側の窓境界計算式自体はD-031の対象外）。
+
+### 結果
+- `./gradlew testDebugUnitTest`成功（`CameraDirectorTest`が23件全てpass、`test-results`のXMLで`failures=0, errors=0`を確認）。`./gradlew assembleDebug`成功。既存テストに回帰なし。
+
+### 次回開始位置
+- T-025（動画書き出しのカメラ制御、S14）に着手する。D-028決定に従い、`VideoExporter`が現在1回だけ呼んでいる`awaitSnapshot`（`MapLibreMap.snapshot()`ベース）を、`CameraDirector.computeKeyframes`のキーフレーム数分だけ`MapSnapshotter`を逐次呼び出す方式へ置き換える設計になる見込み（詳細はD-028「影響」参照）。
+- 懸念点（将来的な見直し候補）: 上記「実施内容」で触れた「隣接キーフレーム間隔が極端に短い場合の`computeKeyframes`窓境界計算（整数除算）が幅0の窓を生みうる」件は、既定のキーフレーム間隔（5秒）や通常の`keyframeIntervalMillis`指定では発生しない理論上のエッジケースであり、今回は記録のみに留めた。実データで顕在化した場合に改めて対応を検討する。
+
 ## 2026-08-22 T-024 Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020・T-021・T-021b・T-022・T-023・T-023b・T-023c（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-024の実施内容・結果・次回開始位置は下記エントリ「## 2026-08-22 T-024 画面再生でのカメラ追従（S13）」に記録済みでコミット`b7ef8c5`に含まれている（`git show --stat b7ef8c5`で`docs/progress.md`が変更ファイルに含まれることを確認済み）が、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）は過去タスクの記録同様Managerへ要確認のまま。

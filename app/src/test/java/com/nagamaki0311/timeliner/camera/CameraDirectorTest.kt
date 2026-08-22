@@ -415,14 +415,91 @@ class CameraDirectorTest {
     }
 
     @Test
-    fun currentKeyframeIndex_exactlyAtMidpoint_prefersEarlierKeyframe() {
-        // 同点(previousGap == nextGap)は、キーフレーム切替を最小限にする実装上の選択として前者を優先する。
+    fun currentKeyframeIndex_exactlyAtMidpoint_prefersLaterKeyframe() {
+        // 境界ミリ秒ちょうど(playbackMillis == midpoint)は、computeKeyframes内部の窓所有権
+        // （resolveWindowIndexRangeが共有境界を後の窓に割り当てる規約）と一致させるため、
+        // 後のキーフレームを優先する（docs/decisions.md D-031）。
         val keyframes = listOf(
             CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
             CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
         )
 
-        assertEquals(0, CameraDirector.currentKeyframeIndex(keyframes, 500L))
+        assertEquals(1, CameraDirector.currentKeyframeIndex(keyframes, 500L))
+    }
+
+    // ---- currentKeyframeIndexとcomputeKeyframesの窓所有権の等価性（D-031） ----
+
+    @Test
+    fun currentKeyframeIndex_matchesResolveWindowIndexRangeOwnership_acrossVariousKeyframeLayouts() {
+        // currentKeyframeIndexが返すキーフレームは、その再生時刻(playbackMillis)に対応するデータ時刻を
+        // resolveWindowIndexRangeが「所有」する窓のキーフレームと厳密に一致するべきである(D-031)。
+        // buildManual(speedMultiplier=1.0)は再生時刻=データ時刻-originの単純な線形写像になるため、
+        // 窓境界(中点)を任意のミリ秒に厳密に一致させて検証できる。
+        val timestamps = LongArray(21) { it * 100L } // 0,100,...,2000
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        // 均等間隔・不均等間隔の両方を含む複数のキーフレーム時刻レイアウトで検証する。
+        val keyframeTimesLayouts = listOf(
+            listOf(0L, 400L, 800L, 1_200L, 1_600L, 2_000L), // 均等間隔(400ms刻み)、境界がデータ点にも一致
+            listOf(0L, 100L, 350L, 900L, 2_000L), // 不均等間隔
+            listOf(0L, 2_000L) // 2点のみ
+        )
+
+        for (keyframeTimes in keyframeTimesLayouts) {
+            val keyframes = keyframeTimes.map { t ->
+                CameraDirector.CameraKeyframe(t, 0.0, 0.0, 0.0)
+            }
+            val windowCount = keyframeTimes.size
+            // windowBoundaries[i]は窓iのwindowStart（i=0の窓は0、以降は隣接キーフレームの中点）。
+            val windowBoundaries = keyframeTimes.indices.map { index ->
+                if (index == 0) 0L else (keyframeTimes[index - 1] + keyframeTimes[index]) / 2
+            }
+
+            // 各窓の所有インデックス範囲を、computeKeyframesと同じ規約で事前計算する。
+            val ownedRanges = (0 until windowCount).map { index ->
+                val isLastWindow = index == windowCount - 1
+                val windowStart = windowBoundaries[index]
+                val windowEnd = if (isLastWindow) keyframeTimes.last() else windowBoundaries[index + 1]
+                CameraDirector.resolveWindowIndexRange(
+                    windowStart = windowStart,
+                    windowEnd = windowEnd,
+                    isLastWindow = isLastWindow,
+                    timestampsMillis = timestamps,
+                    timeline = timeline
+                )
+            }
+
+            // 全データ点（窓境界ちょうどに一致する点を含む）について、currentKeyframeIndexの結果が、
+            // そのデータ時刻を所有する窓のインデックスと一致することを確認する。
+            for (dataIndex in timestamps.indices) {
+                val dataTimeMillis = timestamps[dataIndex]
+                if (dataTimeMillis < keyframeTimes.first() || dataTimeMillis > keyframeTimes.last()) continue
+
+                val ownerWindowIndex = ownedRanges.indexOfFirst { (from, to) -> dataIndex in from until to }
+                if (ownerWindowIndex == -1) continue // 退化窓が挟む未所有点はブラケット対象で本検証の対象外。
+
+                val actualIndex = CameraDirector.currentKeyframeIndex(keyframes, dataTimeMillis)
+                assertEquals(
+                    "playbackMillis=$dataTimeMillis(keyframeTimes=$keyframeTimes)で" +
+                        "currentKeyframeIndexとresolveWindowIndexRangeの所有権が一致しません",
+                    ownerWindowIndex, actualIndex
+                )
+            }
+
+            // データ点に一致しない窓境界ミリ秒(中点)ちょうどについても直接検証する。
+            // resolveWindowIndexRangeの規約(D-029/D-030)では共有境界は後の窓のwindowStart（lowerBoundベース、
+            // 含む）に属し前の窓のwindowEnd（含まない）には属さないため、境界ミリ秒ちょうどの所有者は
+            // 常に後の窓（インデックスがそのままwindowBoundariesの添字）になる。
+            for (laterWindowIndex in 1 until windowCount) {
+                val boundary = windowBoundaries[laterWindowIndex]
+                val actualIndex = CameraDirector.currentKeyframeIndex(keyframes, boundary)
+                assertEquals(
+                    "境界ミリ秒=$boundary(keyframeTimes=$keyframeTimes)で" +
+                        "currentKeyframeIndexが後の窓を選んでいません",
+                    laterWindowIndex, actualIndex
+                )
+            }
+        }
     }
 
     private fun buildMultiDaySyntheticRoute(): Triple<LongArray, DoubleArray, DoubleArray> {
