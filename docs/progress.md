@@ -17,6 +17,22 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-017c T-017bレビュー指摘の修正（commitPreparedImport経由のALL遷移で手動モードが解除されない）
+
+### 実施内容
+D-024に基づき、T-017b（コミット`dfd36ca`）のレビューで検出されたMedium 1件を修正した。
+
+- `TimelineViewModel.commitPreparedImport`内、`periodResolutionGate.isAllSelected`が`true`のときの`resolveAndApplyAllPeriod()`呼び出しが戻り値を捨てており、`enforceSpeedModeConstraint`を呼んでいなかった。`selectAllPeriod()`は同じ`resolveAndApplyAllPeriod()`の戻り値を`?.let { enforceSpeedModeConstraint(it.type) }`で使っているのに対し非対称だった。
+- DB空の初回起動時、`_selectedPeriod`はフォールバック値（`isAllSelected=true`のまま`type`だけ`DAY`）となり、`DAY`では手動速度モードを選択可能なため、このフォールバック状態で手動モードを選んでから初回インポートを行うと`type`が`ALL`へ遷移しても手動モードが解除されずD-017決定2に反していた。修正は`commitPreparedImport`内の該当1行を`selectAllPeriod()`と同じパターンに揃えるのみ（1行差分）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（既存テストスイート、失敗0）。
+- `./gradlew assembleDebug`が成功した。
+- テストで検証しきれない部分: `TimelineViewModel`は`ViewModel`基底クラス・`TimelineRepository`のAndroid API依存でJVM単体テストからインスタンス化できない制約（D-020と同じ）があり、`commitPreparedImport`のこの1行（`resolveAndApplyAllPeriod()`の戻り値を使って`enforceSpeedModeConstraint`を呼ぶ配線）を直接実行するテストは追加していない。`enforceSpeedModeConstraint`・`isManualModeAllowed`のロジック自体はT-017/T-017bで既に別経路（`selectPeriod`/`selectAllPeriod`）から間接的に検証済みであり、今回の修正は`selectAllPeriod()`と全く同じ呼び出しパターンへ揃える1行修正のため、大掛かりなテスト基盤（Robolectric等）を新規に追加するコストには見合わないと判断した（AGENTS.md判定ラダー、D-020と同じ制約）。実機/エミュレータでの目視確認（DB空→手動モード選択→初回インポート→自動モードへ強制切替されることの確認）は本タスクのサンドボックス環境では未実施。
+
+### 次回開始位置
+- 次はdocs/tasks.mdのT-018（再生時間選択肢の変更、S7）。
+
 ## 2026-08-22 T-017b T-017レビュー指摘の修正（ALL選択中のインポートで境界が再解決されない、起動時レース条件）
 
 ### 実施内容

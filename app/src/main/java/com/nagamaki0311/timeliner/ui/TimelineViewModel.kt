@@ -451,7 +451,7 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
             // 全期間の境界を再解決する。DAY/WEEK/MONTH/YEAR/CUSTOMを明示選択中の場合は上書きしない
             // （docs/decisions.md D-023決定1）。
             if (periodResolutionGate.isAllSelected) {
-                resolveAndApplyAllPeriod()
+                resolveAndApplyAllPeriod()?.let { enforceSpeedModeConstraint(it.type) }
             }
             _importState.value = ImportUiState.Success(result)
         } catch (e: CancellationException) {
