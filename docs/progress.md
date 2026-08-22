@@ -2,6 +2,20 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-22 T-023c T-023bレビュー指摘の修正（退化ケースのブラケット処理が境界二重カウントを再導入する、D-030）
+
+### 実施内容
+- D-030決定1に従い、T-023b（コミット`f8c4d05`）のレビューで検出されたMedium 1件・Low 1件を`app/src/main/java/com/nagamaki0311/timeliner/camera/CameraDirector.kt`で修正した。
+- **Medium（退化ケースの境界二重カウント再発）**: `resolveWindowIndexRange`の退化ケース（窓内に点が1つも無い場合、`fromIndex >= toIndex`）にあった「直前の点(`fromIndex - 1`)・直後の点(`upperBound(dataEnd)`)にブラケットした範囲を返す」処理を削除し、常に`fromIndex to toIndex`（退化ケースでは`fromIndex == toIndex`の空範囲）を返すだけの単純な関数にした。空範囲は`fromIndex`が常に隣接窓との共有境界（`lowerBound`/`upperBound`で求めた値）と一致するため、隣接窓（非退化・退化を問わず）の範囲と重複しない。ブラケット処理自体（「都市間の自然なカメラ遷移」要件のための、直前・直後の点を見せる処理）は削除せず、責務を`buildKeyframe`側へ移した: `resolveWindowIndexRange`が空範囲を返した場合のみ、`buildKeyframe`が`(fromIndex - 1).coerceAtLeast(0)`〜`(toIndex + 1).coerceAtMost(latitudes.size)`の範囲で`GeoBounds.compute`を呼ぶ。この範囲の点の座標は「所有権を主張せず読むだけ」（`resolveWindowIndexRange`の返り値には現れない）なので、それらの点を排他的に所有する隣接窓（通常は直前・直後の非退化窓）の範囲とは重複しない。`latitudes.size >= 1`（`computeKeyframes`の空配列早期returnで保証済み）である限りこのブラケット範囲は必ず非空になることを`check`で確認している。
+- **Low（KDoc・progress.mdの不正確な記述）**: `CameraDirector`のクラスKDoc（設計方針2）・`resolveWindowIndexRange`のKDocを、退化ケースが空範囲を返すこと・そのbbox計算の責務分離を明記する形に更新した。`docs/progress.md`のT-023エントリ（本ファイル下方）の該当記述（T-023bが「重複・取りこぼしなく再生時間全体を分割するようにした」と無限定に主張していた箇所、および退化ケースのブラケット処理の説明）も、通常ケースと退化ケースを区別する形に追記で更新した。
+
+### 結果
+- `CameraDirectorTest.kt`に2件のテストを追加した（計14件→16件）。(1) `resolveWindowIndexRange_degenerateWindow_returnsEmptyRangeThatDoesNotOverlapNeighbors`: Reviewerが実際に再現したシナリオ（2点のみのルート、`keyframeIntervalMillis=500`で3窓に分割、中央窓が退化）を直接`resolveWindowIndexRange`で検証し、w0=(0,1)・w1=(1,1)（空、退化）・w2=(1,2)となり、隣接するtoIndex/fromIndexが厳密に一致し（重複・隙間無し）、全点(index0,1)がちょうど1つの窓の所有範囲に属することを確認した。(2) `computeKeyframes_degenerateMiddleWindow_showsBothEndpointsWithoutOwnershipOverlap`: 同じ2点シナリオを`computeKeyframes`全体で検証し、先頭・末尾キーフレームがそれぞれ単一点（最大ズーム）、中央（退化）キーフレームが所有権としては空範囲を持ちながらも、bboxとしては両端点をブラケットして中心経度が両点の間・ズームが明確に低い（広い範囲）になることを確認した。既存の`computeKeyframes_wideRangeKeyframeHasLowerZoomThanNarrowRangeKeyframe`（6つ連続する退化窓を含むシナリオ）も無変更で成功することを確認済み（退化窓のbbox自体は今回の変更で変わらないため）。
+- `./gradlew testDebugUnitTest`・`./gradlew assembleDebug`はいずれも成功。既存テスト（camera/GeoBounds含む全パッケージ）に回帰なし（`CameraDirectorTest`は16件全件成功、他パッケージのfailures=0, errors=0）。
+
+### 次回開始位置
+- T-024（画面再生でのカメラ追従、S13）に着手する。次回開始位置自体はT-023時点から変更なし（`CameraDirector.computeKeyframes`をPlaybackController/RouteOverlayView側から呼び出し、`MapLibreMap`への直接カメラ移動を実装する）。
+
 ## 2026-08-22 T-023b Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020・T-021・T-021b・T-022・T-023（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-023bの実施内容・結果・次回開始位置は下記エントリ「## 2026-08-22 T-023b CameraDirectorレビュー指摘の修正（隣接キーフレーム窓の境界二重カウント、D-029）」に記録済みでコミット`f8c4d05`に含まれている（`git show --stat f8c4d05`で`docs/progress.md`が変更ファイルに含まれることを確認済み）が、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）は過去タスクの記録同様Managerへ要確認のまま。
@@ -46,8 +60,8 @@ T-019b・T-020・T-021・T-021b・T-022（本ファイル下方の各エント�
 ### 実施内容
 - D-028（T-022スパイク検証の結論、キーフレーム＋クロスフェード方式に限定）に従い、`android.*`に一切依存しない純Kotlinの`CameraDirector`（新設`camera`パッケージ、`app/src/main/java/com/nagamaki0311/timeliner/camera/CameraDirector.kt`）を実装した。まだT-024・T-025のどちらからも呼び出していない（先行実装、AGENTS.md判定ラダー1参照）。
 - **キーフレームの時間配置**: 新しい区間分割ロジックを作らず、既存の`PlaybackTimeline`（T-019の関心度モデルを内包、滞在・夜間は圧縮、移動は関心度に応じて時間を割く）をそのまま再利用した。再生時刻（0〜総再生時間）を`keyframeIntervalMillis`（既定5,000ms）間隔でサンプリングし、対応するデータ時刻をキーフレームの基準時刻とする方式。「長時間の静止画面凝視を避ける」という要件から、隣接キーフレーム間隔は常に指定した`keyframeIntervalMillis`以下になる（最後の区間のみそれ以下の端数になりうる）ことをテストで確認した。5秒を既定値に採用した理由は、目標再生時間60秒（D-017既定）で約13個程度のキーフレームになり、数秒〜十秒程度という要件のレンジに収まるため。
-- **キーフレームごとのカメラ位置・ズーム**: 隣接キーフレームの再生時刻の中点で区切った時間窓に対応するデータ時刻範囲をルート点列から二分探索（自前実装の`lowerBound`/`upperBound`）で切り出し、既存の`GeoBounds`でbboxを求める。中心座標はbboxの中点（min/maxの平均）。ズームは新設の`CameraZoom`（同ファイル内、`internal object`）が、Web Mercatorの標準的な「1タイル256px、ズームZで1タイルが360/2^Z度をカバーする」関係式（Google Maps/Mapbox系ライブラリで広く使われる`getBoundsZoomLevel`と同じ考え方）で、bboxが指定ビューポート（既定1080x1080px、D-002決定6の短辺1080px上限に合わせた正方形近似）に収まる最小ズームを計算する。狭い範囲（滞在）ほど高いズーム、広い範囲（移動）ほど低いズームになることをテストで確認した。**初版（コミット`7a748af`）では隣接窓の共有境界（同じデータ時刻）を両側とも閉区間で扱っており、境界に一致する点が両方の窓に二重カウントされる不具合があった（T-023レビューMedium、D-029）。T-023bでこれを修正し、窓は開始側のみ含む片側開区間`[dataStart, dataEnd)`とし、最後の窓のみ`dataEnd`自身も含む閉区間として扱うことで、重複・取りこぼしなく再生時間全体を分割するようにした（詳細は下記T-023bエントリ参照）。
-- **窓の中に点が1つも無い退化ケース**（記録点が疎で、キーフレームの時間窓が2点間の空白区間に完全に収まる場合）は、最も近い1点へフォールバックするのではなく、窓の直前・直後の点（移動の両端）にブラケットしてbboxを取る方式にした。単純な最近傍1点フォールバックだと、都市間移動のような「点が疎な大移動」の最中のキーフレームが移動先/移動元のどちらかへスナップしてズームインしてしまい、要件3「都市間の自然なカメラ遷移（移動全体が見える）」を満たせないと判断したため。
+- **キーフレームごとのカメラ位置・ズーム**: 隣接キーフレームの再生時刻の中点で区切った時間窓に対応するデータ時刻範囲をルート点列から二分探索（自前実装の`lowerBound`/`upperBound`）で切り出し、既存の`GeoBounds`でbboxを求める。中心座標はbboxの中点（min/maxの平均）。ズームは新設の`CameraZoom`（同ファイル内、`internal object`）が、Web Mercatorの標準的な「1タイル256px、ズームZで1タイルが360/2^Z度をカバーする」関係式（Google Maps/Mapbox系ライブラリで広く使われる`getBoundsZoomLevel`と同じ考え方）で、bboxが指定ビューポート（既定1080x1080px、D-002決定6の短辺1080px上限に合わせた正方形近似）に収まる最小ズームを計算する。狭い範囲（滞在）ほど高いズーム、広い範囲（移動）ほど低いズームになることをテストで確認した。**初版（コミット`7a748af`）では隣接窓の共有境界（同じデータ時刻）を両側とも閉区間で扱っており、境界に一致する点が両方の窓に二重カウントされる不具合があった（T-023レビューMedium、D-029）。T-023bでこれを修正し、窓は開始側のみ含む片側開区間`[dataStart, dataEnd)`とし、最後の窓のみ`dataEnd`自身も含む閉区間として扱うことで、通常ケース（窓内に1点以上ある場合）は重複・取りこぼしなく再生時間全体を分割するようにした（詳細は下記T-023bエントリ参照）。ただしT-023bの時点では退化ケース（次項）のブラケット処理は無修正のままで、退化ケース経由で境界二重カウントが再発していた。これはT-023cで別途修正した（下記T-023cエントリ参照、docs/decisions.md D-030）。**
+- **窓の中に点が1つも無い退化ケース**（記録点が疎で、キーフレームの時間窓が2点間の空白区間に完全に収まる場合）は、最も近い1点へフォールバックするのではなく、窓の直前・直後の点（移動の両端）にブラケットしてbboxを取る方式にした。単純な最近傍1点フォールバックだと、都市間移動のような「点が疎な大移動」の最中のキーフレームが移動先/移動元のどちらかへスナップしてズームインしてしまい、要件3「都市間の自然なカメラ遷移（移動全体が見える）」を満たせないと判断したため。**T-023cで、この「直前・直後の点にブラケット」自体は維持しつつ、`resolveWindowIndexRange`はインデックスの「所有権」としては空範囲を返し、bboxの計算（`buildKeyframe`側）でのみ直前・直後の点の座標を所有権を主張せず読む方式に変更した（下記T-023cエントリ参照）。**
 - 既存の`GeoBounds.compute(latitudes, longitudes)`に、範囲指定版のオーバーロード`compute(latitudes, longitudes, fromIndex, toIndex)`を追加した（コピー無しでルート点列の部分範囲だけbbox計算できるようにするため）。既存の引数無し版はこの新オーバーロードへ委譲する形にし、動作は変更していない（`GeoBoundsTest.kt`の既存テストが全て変更なしで通ることを確認済み）。
 
 ### 結果

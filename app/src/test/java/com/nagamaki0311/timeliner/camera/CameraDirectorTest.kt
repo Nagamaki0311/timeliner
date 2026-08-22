@@ -265,6 +265,79 @@ class CameraDirectorTest {
         assertEquals((0 until timestamps.size).toList(), coveredIndices)
     }
 
+    // ---- 退化ケース（窓内に点が1つも無い）のブラケット処理（D-030、T-023c） ----
+
+    @Test
+    fun resolveWindowIndexRange_degenerateWindow_returnsEmptyRangeThatDoesNotOverlapNeighbors() {
+        // Reviewerが実際に再現したシナリオ（docs/decisions.md D-030）: 2点のみのルートを
+        // keyframeIntervalMillis=500で3窓に分割すると、中央の窓(w1)は窓内に点が1つも無い退化ケースになる。
+        val timestamps = longArrayOf(0L, 1_000L)
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        val w0 = CameraDirector.resolveWindowIndexRange(
+            windowStart = 0L, windowEnd = 250L, isLastWindow = false,
+            timestampsMillis = timestamps, timeline = timeline
+        )
+        val w1 = CameraDirector.resolveWindowIndexRange(
+            windowStart = 250L, windowEnd = 750L, isLastWindow = false,
+            timestampsMillis = timestamps, timeline = timeline
+        )
+        val w2 = CameraDirector.resolveWindowIndexRange(
+            windowStart = 750L, windowEnd = 1_000L, isLastWindow = true,
+            timestampsMillis = timestamps, timeline = timeline
+        )
+
+        assertEquals(0 to 1, w0) // index0のみ（所有権あり）
+        assertEquals(1 to 1, w1) // 退化: 空範囲（所有権を主張しない）
+        assertEquals(1 to 2, w2) // index1のみ（所有権あり）
+
+        // 重複無し: 隣接する窓のtoIndexと次の窓のfromIndexが厳密に一致する。
+        assertEquals(
+            "w0のtoIndexとw1のfromIndexが一致しません(重複または隙間がある可能性)",
+            w0.second, w1.first
+        )
+        assertEquals(
+            "w1のtoIndexとw2のfromIndexが一致しません(重複または隙間がある可能性)",
+            w1.second, w2.first
+        )
+        // 取りこぼし無し: 全ての点(index0,1)が、重複・隙間なくちょうど1つの窓の所有範囲に属する。
+        val coveredIndices = listOf(w0, w1, w2).flatMap { (from, to) -> (from until to).toList() }
+        assertEquals(listOf(0, 1), coveredIndices)
+    }
+
+    @Test
+    fun computeKeyframes_degenerateMiddleWindow_showsBothEndpointsWithoutOwnershipOverlap() {
+        // D-030の再現シナリオをcomputeKeyframes全体で検証する: 東京(index0)→大阪(index1)の2点のみ、
+        // keyframeIntervalMillis=500で3窓（先頭・末尾は単一点、中央窓は退化）に分割される。
+        val timestamps = longArrayOf(0L, 1_000L)
+        val latitudes = doubleArrayOf(35.6812, 34.6937) // 東京, 大阪
+        val longitudes = doubleArrayOf(139.7671, 135.5023)
+        val timeline = PlaybackTimeline.buildManual(timestamps, speedMultiplier = 1.0)
+
+        val keyframes = CameraDirector.computeKeyframes(
+            timestamps, latitudes, longitudes, timeline, keyframeIntervalMillis = 500L
+        )
+
+        assertEquals(3, keyframes.size)
+        // 先頭(窓0)は東京のみを排他的に所有する非退化窓 → 単一点のため最大ズーム。
+        assertEquals(139.7671, keyframes[0].centerLongitude, 1e-9)
+        assertEquals(CameraZoom.MAX_ZOOM, keyframes[0].zoom, 1e-9)
+        // 末尾(窓2)は大阪のみを排他的に所有する非退化窓（isLastWindowの閉区間） → 単一点のため最大ズーム。
+        assertEquals(135.5023, keyframes[2].centerLongitude, 1e-9)
+        assertEquals(CameraZoom.MAX_ZOOM, keyframes[2].zoom, 1e-9)
+        // 中央(窓1、退化)はresolveWindowIndexRangeの所有範囲としては空だが、bboxは東京・大阪の座標を
+        // 読むだけでブラケットするため、中心経度は両者の間になり、ズームは明確に広い範囲になる。
+        val middle = keyframes[1]
+        assertTrue(
+            "中央キーフレームの中心経度が東京・大阪の間にありません: ${middle.centerLongitude}",
+            middle.centerLongitude in 135.5023..139.7671
+        )
+        assertTrue(
+            "中央キーフレームのズームが十分に低くありません(広い範囲であるはず): ${middle.zoom}",
+            middle.zoom < CameraZoom.MAX_ZOOM - 3.0
+        )
+    }
+
     @Test
     fun computeKeyframes_pointExactlyOnSharedWindowBoundary_isNotDuplicatedAcrossKeyframes() {
         // 東京(index0,1)→境界ちょうどの中間点(index2)→大阪(index3,4)という配置。

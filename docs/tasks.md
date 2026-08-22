@@ -57,6 +57,7 @@
 | T-022 | 560日規模の実データ対応: カメラ制御スパイク検証（S11） | 高 | 完了 | developer | D-028参照。スパイク成功。MapSnapshotterは実在・契約確認済み。前提条件としてキーフレーム（ショット）方式に限定する |
 | T-023 | 560日規模の実データ対応: CameraDirector（S12） | 中 | 完了 | developer | D-017参照。純Kotlinの`camera.CameraDirector`を新設（`android.*`非依存）。既存`PlaybackTimeline`の再生時刻を一定間隔(既定5秒)でサンプリングしキーフレーム時刻とし、隣接キーフレーム中点の時間窓に対応するルート点から`GeoBounds`でbbox、新設`CameraZoom`（Web Mercatorのbbox-fit標準式）で中心・ズームを算出。まだT-024/T-025からは未使用（先行実装）。詳細はdocs/progress.md参照 |
 | T-023b | T-023レビュー指摘の修正（隣接キーフレーム窓の境界二重カウント） | 中 | 完了 | developer | D-029参照。`CameraDirector`の窓インデックス解決を`internal fun resolveWindowIndexRange`へ抽出し、隣接窓の共有境界を片側開区間`[dataStart, dataEnd)`にすることで境界点の二重カウントを解消（最後の窓のみ`dataEnd`自身を含む閉区間）。冗長な`lowerBound`二重計算も解消。日付変更線bboxの誤り（D-029決定2）はコード対応せず`CameraZoom`のKDocのみ実態を明記。詳細はdocs/progress.md参照 |
+| T-023c | T-023bレビュー指摘の修正（退化ケースのブラケット処理が境界二重カウントを再導入する） | 中 | 完了 | developer | D-030参照。`resolveWindowIndexRange`は退化ケース（窓内に点が1つも無い場合）でも空範囲`fromIndex == toIndex`（他窓と重複しない、インデックスの所有権のみを扱う）を返すよう単純化。`buildKeyframe`側で空範囲を検知した場合のみ、直前・直後の点の座標を所有権を主張せず読むだけでbboxをブラケットする方式に変更し、「都市間の自然なカメラ遷移」要件を維持したまま境界二重カウントを解消。詳細はdocs/progress.md参照 |
 | T-024 | 560日規模の実データ対応: 画面再生でのカメラ追従（S13） | 中 | 未着手 | developer | D-017参照 |
 | T-025 | 560日規模の実データ対応: 動画書き出しのカメラ制御（S14） | 高 | 未着手 | developer | D-017参照。地図を下地からBitmapOverlay内部へ移す方式変更（D-009更新） |
 | T-026 | 560日規模の実データ対応: 全体再計測とドキュメント更新（S15） | 中 | 未着手 | developer | D-017参照。最終ステップ |

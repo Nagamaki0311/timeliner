@@ -31,7 +31,11 @@ import kotlin.math.PI
  *    なる。隣接する2つの窓は開始側のみ含む片側開区間（`[dataStart, dataEnd)`）として区切ることで、
  *    共有境界（窓iの終端＝窓i+1の始端の同じデータ時刻）にちょうど一致する点が両方の窓に二重に含まれない
  *    ようにする（D-029）。ただし最後の窓のみ`dataEnd`自身（再生時間全体の最終点）を含む閉区間として扱い、
- *    最後の点が取りこぼされないようにする。
+ *    最後の点が取りこぼされないようにする。窓の中に厳密に収まる点が1つも無い退化ケース（大きな移動の
+ *    途中で記録点が疎な区間等）では、[resolveWindowIndexRange]は空範囲（`fromIndex == toIndex`、他の窓と
+ *    重複しない）を返す。この場合[buildKeyframe]は、直前・直後の点（移動の両端）の座標を所有権を主張せず
+ *    読むだけでbboxをブラケットする（座標を読むだけなので、それらの点を排他的に所有する隣接窓の範囲とは
+ *    重複しない）ことで、「都市間の自然なカメラ遷移」要件を退化ケースでも満たす（D-030）。
  */
 object CameraDirector {
 
@@ -147,7 +151,18 @@ object CameraDirector {
             windowStart, windowEnd, isLastWindow, timestampsMillis, timeline
         )
 
-        val bounds = GeoBounds.compute(latitudes, longitudes, fromIndex, toIndex)
+        val bounds = if (fromIndex < toIndex) {
+            GeoBounds.compute(latitudes, longitudes, fromIndex, toIndex)
+        } else {
+            // 退化ケース（窓内に点が1つも無い）: resolveWindowIndexRangeは空範囲（所有権なし）を返す
+            // ため、直前・直後の点（移動の両端）の座標を所有権を主張せず読むだけでブラケットする（D-030）。
+            // fromIndex == toIndexであり、latitudes.size >= 1（computeKeyframesの早期returnで保証済み）
+            // なので、bracketFrom < bracketToは常に成り立つ（壊れたら失敗する最小限の確認、AGENTS.md原則6）。
+            val bracketFrom = (fromIndex - 1).coerceAtLeast(0)
+            val bracketTo = (toIndex + 1).coerceAtMost(latitudes.size)
+            check(bracketFrom < bracketTo) { "退化ケースのブラケット範囲が不正です: $bracketFrom, $bracketTo" }
+            GeoBounds.compute(latitudes, longitudes, bracketFrom, bracketTo)
+        }
         val centerLatitude = (bounds.minLatitude + bounds.maxLatitude) / 2.0
         val centerLongitude = (bounds.minLongitude + bounds.maxLongitude) / 2.0
         val zoom = CameraZoom.zoomToFitBounds(bounds, viewportWidthPx, viewportHeightPx)
@@ -155,16 +170,21 @@ object CameraDirector {
     }
 
     /**
-     * 再生時刻の時間窓[windowStart]〜[windowEnd]に対応するデータ時刻範囲にある[timestampsMillis]
+     * 再生時刻の時間窓[windowStart]〜[windowEnd]に対応するデータ時刻範囲に厳密に収まる[timestampsMillis]
      * （時刻昇順）のインデックス範囲を`[fromIndex, toIndex)`半開区間（[GeoBounds.compute]と同じ規約）
      * のPairで返す。開始側（`dataStart`）は含み、終了側（`dataEnd`）は含まない片側開区間とすることで、
      * 隣接する2つの窓の共有境界（窓iの`windowEnd`＝窓i+1の`windowStart`、変換後は同じデータ時刻になる）
      * にちょうど一致する点が両方の窓に二重に含まれないようにする（D-029）。ただし[isLastWindow]が
      * trueの場合のみ`dataEnd`自身も含む閉区間として扱い、再生時間全体の最後の点を取りこぼさないようにする。
      *
+     * この関数はインデックスの「所有権」（重複・取りこぼしなく再生時間全体を分割する責務）のみを扱う。
      * 窓の中に厳密に収まる点が1つも無い退化ケース（大きな移動の途中で記録点が疎な区間等）では、
-     * 窓の直前・直後の点（移動の両端）にブラケットした範囲を返すことで、その移動全体が見えるbboxにする
-     * （単に最も近い1点へフォールバックすると「都市間の自然なカメラ遷移」要件を満たせないため）。
+     * `fromIndex == toIndex`の空範囲を返す（[fromIndex]は常に隣接窓との共有境界と一致する値になるため、
+     * 空範囲は隣接窓（非退化・退化を問わず）の範囲とも重複しない、D-030）。退化した窓のカメラbbox自体
+     * （直前・直後の点をブラケットして「都市間の自然なカメラ遷移」を見せる処理）はこの関数の責務外で、
+     * 呼び出し元の[buildKeyframe]が、この空範囲を検知した上で直前・直後の点の座標を所有権を主張せず
+     * 読むだけで参照することで実現する（座標を読むだけなので、それらの点を排他的に所有する隣接窓の
+     * 範囲とは重複しない）。
      */
     internal fun resolveWindowIndexRange(
         windowStart: Long,
@@ -180,11 +200,6 @@ object CameraDirector {
             upperBound(timestampsMillis, dataEnd)
         } else {
             lowerBound(timestampsMillis, dataEnd)
-        }
-        if (fromIndex >= toIndex) {
-            val prevIndex = (fromIndex - 1).coerceAtLeast(0)
-            val nextIndex = upperBound(timestampsMillis, dataEnd).coerceAtMost(timestampsMillis.size - 1)
-            return prevIndex to (nextIndex + 1)
         }
         return fromIndex to toIndex
     }
