@@ -125,6 +125,7 @@ class RouteOverlayView @JvmOverloads constructor(
         RouteFrameRenderer.draw(
             canvas = canvas,
             screenCoordinates = screenCoordinates,
+            timestampsMillis = cachedSimplifiedTimestamps,
             progress = currentProgress(),
             dateTimeText = dateTimeText
         )

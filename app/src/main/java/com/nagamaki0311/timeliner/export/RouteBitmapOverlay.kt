@@ -54,6 +54,7 @@ class RouteBitmapOverlay(
         RouteFrameRenderer.draw(
             canvas = canvas,
             screenCoordinates = screenCoordinates,
+            timestampsMillis = routeTimestampsMillis,
             progress = progress,
             dateTimeText = PlaybackTimeFormat.format(dataTimeMillis)
         )

@@ -17,6 +17,26 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-020 ポリライン分断と軌跡の描き分け（S9）
+
+### 実施内容
+D-017の計画（S9）に基づき、`RouteFrameRenderer`のルート線描画に「6時間超ギャップでの分断表示」と「過去/直近の描き分け」を実装した。画面表示（`RouteOverlayView`）・動画書き出し（`RouteBitmapOverlay`）の両方が共有するロジックのため、両呼び出し元を更新した。
+
+- **`RouteFrameRenderer.draw`に`timestampsMillis: LongArray`引数を追加**（`screenCoordinates`と対応する時刻昇順配列）。呼び出し元は両方とも既に保持している配列（`RouteOverlayView.cachedSimplifiedTimestamps`／`RouteBitmapOverlay.routeTimestampsMillis`）をそのまま渡すだけで済んだ。
+- **ギャップ分断**: `computeGapBreakIndices(timestampsMillis, gapMillis)`（純Kotlin、公開関数）を追加。隣接点間の経過時間が閾値を超える箇所のローカルインデックスを返し、`drawRoute`内の`drawPathSegment`でそのインデックスの点は`moveTo`で打ち直して線を分断する。閾値は`process.CleanOptions().segmentGapMillis`（既定6時間）をそのままimportして使用（`render`→`process`への依存は、`store.RouteOverview`が既に同じ理由で`process.CleanOptions`を参照している前例があり問題なしと判断）。`RouteOverview.computeBreakIndices`とは「日境界を含む概観全体のインデックスを扱う」用途が異なるため、独立実装にした（KDocに理由を明記）。
+- **過去/直近/現在の3層描画**: `recentWindowStartIndex(timestampsMillis, windowMillis)`（純Kotlin、公開関数、二分探索による下限探索）を追加。表示区間の末尾時刻から遡って`windowMillis`以内の点を「直近」、それより前を「過去」とし、`drawRoute`で2本の`Path`（`Style.routePath`＝直近用、既存の`routePaint`をそのまま流用し後方互換を確保／新設の`Style.pastRoutePath`＋`pastRoutePaint`＝過去用）に分けて描画する。現在位置マーカー自体は変更していない（`markerPosition`のロジックは無改修）。
+  - **直近ウィンドウの既定値**: 2時間を採用。数十分だと停留・小休止のたびに過去/直近の描き分けが頻繁に切り替わり煩雑になり、逆に半日規模だと「直近」が実質その日全体になり描き分けが機能しなくなるため、中間的な値として選んだ（実データでの体感検証はD-017「影響」記載の既知の制約により本環境では不可能、推測に基づく初期値。将来実データで見直す余地がある旨をKDocに残した）。
+  - **過去区間のスタイル既定値**: `pastRouteColor = "#801976D2"`（既存`routeColor`と同色相・アルファ約50%）、`pastRouteStrokeWidthPx = 4f`（既存6fよりやや細め）。既存の`routeColor`/`routeStrokeWidthPx`は変更せず「直近」用としてそのまま流用したため、`Style()`のデフォルト値だけを使う既存呼び出し（T-006〜T-019時点の見た目）は直近区間について完全に後方互換。
+- **Path分割の実装方法**: `drawRoute`を「時刻配列の点数が画面座標の点数と一致するか」で分岐させ、一致する場合のみ上記の分断・描き分けを行い、一致しない場合（防御的フォールバック、通常発生しない想定）は既存どおり単一の`Path`・単一の`routePaint`で描画する。一致する場合は`drawPathSegment(startIndex, endIndexInclusive, breakIndices, path, paint)`という汎用ヘルパーを1つ追加し、「過去区間の描画（0〜recentWindowStartIndex）」と「直近区間の描画（recentWindowStartIndex〜末尾）」の両方から呼び出す形にして、多重の分岐やグラデーション処理は導入していない（AGENTS.md判定ラダー・過度な複雑化を避ける方針に従った）。`trimByProgress`（進捗によるトリム、T-007由来）も`screenCoordinates`と`timestampsMillis`を同時に切り詰めるよう拡張し、進捗途中の補間点（線形補間の末尾点）についても時刻を同様に線形補間するようにした。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した。`RouteFrameRendererTest`に`computeGapBreakIndices`（境界値含む5件）・`recentWindowStartIndex`（境界値含む5件）の純Kotlinテストを追加し、全て成功を確認した。
+- `./gradlew assembleDebug`が成功した。
+- `Canvas`/`Path`/`Paint`に依存する`draw`/`drawRoute`/`drawPathSegment`自体はD-003と同じ理由でJVM単体テスト対象外のまま（KDocに明記済み）。
+
+### 次回開始位置
+- T-021（詳細ウィンドウの遅延ロード、S10）。
+
 ## 2026-08-22 T-019b T-019レビュー指摘対応（イベント密度テストのsaturate混同、KDoc追記）
 
 ### 実施内容
