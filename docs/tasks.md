@@ -55,7 +55,7 @@
 | T-021 | 560日規模の実データ対応: 詳細ウィンドウの遅延ロード（S10） | 中 | 完了 | developer | D-017参照。統合方法(b)を採用。新設`store/DetailWindow.kt`（純Kotlin、ウィンドウ範囲計算・再ロード要否判定・点列結合）＋`TimelineViewModel`が再生位置近傍（前後1日、300msデバウンス）を`queryDays`で遅延ロードし`_routePoints`と結合した`displayRoutePoints`を新設。`TimelineScreen`の`RouteOverlayView.setRoute`呼び出し元をこれへ切替。動画書き出しはスコープ外のため`routePoints`のまま無変更。詳細はdocs/progress.md参照 |
 | T-021b | T-021レビュー指摘の修正（期間切替直後、詳細ウィンドウが新期間の境界を誤って使う競合） | 中 | 完了 | developer | D-027参照。新設`ui/DetailWindowGate.kt`（`PeriodResolutionGate`と同じ設計のDB非依存クラス、`isLongPeriodSelected`＋世代ガード）へ切り出し、`selectPeriod`/`resolveAndApplyAllPeriod`が`_selectedPeriod`更新と同じ同期区間で`invalidateDetailWindow()`（`isLongPeriodSelected`を即falseへ・世代を進める）を呼ぶよう修正。`DetailWindowGateTest`でレース再現テストを追加。`DetailWindowTest`にbase点がdetail境界と完全一致する境界テストを1件追加。詳細はdocs/progress.md参照 |
 | T-022 | 560日規模の実データ対応: カメラ制御スパイク検証（S11） | 高 | 完了 | developer | D-028参照。スパイク成功。MapSnapshotterは実在・契約確認済み。前提条件としてキーフレーム（ショット）方式に限定する |
-| T-023 | 560日規模の実データ対応: CameraDirector（S12） | 中 | 未着手 | developer | D-017参照。純Kotlin、カメラ軌道設計。T-022完了後に着手 |
+| T-023 | 560日規模の実データ対応: CameraDirector（S12） | 中 | 完了 | developer | D-017参照。純Kotlinの`camera.CameraDirector`を新設（`android.*`非依存）。既存`PlaybackTimeline`の再生時刻を一定間隔(既定5秒)でサンプリングしキーフレーム時刻とし、隣接キーフレーム中点の時間窓に対応するルート点から`GeoBounds`でbbox、新設`CameraZoom`（Web Mercatorのbbox-fit標準式）で中心・ズームを算出。まだT-024/T-025からは未使用（先行実装）。詳細はdocs/progress.md参照 |
 | T-024 | 560日規模の実データ対応: 画面再生でのカメラ追従（S13） | 中 | 未着手 | developer | D-017参照 |
 | T-025 | 560日規模の実データ対応: 動画書き出しのカメラ制御（S14） | 高 | 未着手 | developer | D-017参照。地図を下地からBitmapOverlay内部へ移す方式変更（D-009更新） |
 | T-026 | 560日規模の実データ対応: 全体再計測とドキュメント更新（S15） | 中 | 未着手 | developer | D-017参照。最終ステップ |

@@ -18,16 +18,26 @@ object GeoBounds {
     )
 
     /** [latitudes]/[longitudes]（同じ長さ、1点以上）を包含する矩形を返す。 */
-    fun compute(latitudes: DoubleArray, longitudes: DoubleArray): Bounds {
-        require(latitudes.isNotEmpty()) { "latitudesは1点以上である必要があります" }
+    fun compute(latitudes: DoubleArray, longitudes: DoubleArray): Bounds =
+        compute(latitudes, longitudes, 0, latitudes.size)
+
+    /**
+     * [latitudes]/[longitudes]のうち`[fromIndex, toIndex)`の範囲（1点以上）のみを包含する矩形を返す
+     * （T-023、[com.nagamaki0311.timeliner.camera.CameraDirector]がキーフレームごとの時間窓に対応する
+     * 点の部分範囲だけをコピー無しでbbox計算するために使う）。
+     */
+    fun compute(latitudes: DoubleArray, longitudes: DoubleArray, fromIndex: Int, toIndex: Int): Bounds {
         require(latitudes.size == longitudes.size) {
             "緯度・経度の配列長が一致しません: lat=${latitudes.size}, lon=${longitudes.size}"
         }
-        var minLat = latitudes[0]
-        var maxLat = latitudes[0]
-        var minLon = longitudes[0]
-        var maxLon = longitudes[0]
-        for (i in 1 until latitudes.size) {
+        require(fromIndex in 0 until toIndex && toIndex <= latitudes.size) {
+            "範囲が不正です: fromIndex=$fromIndex, toIndex=$toIndex, size=${latitudes.size}"
+        }
+        var minLat = latitudes[fromIndex]
+        var maxLat = latitudes[fromIndex]
+        var minLon = longitudes[fromIndex]
+        var maxLon = longitudes[fromIndex]
+        for (i in (fromIndex + 1) until toIndex) {
             val lat = latitudes[i]
             val lon = longitudes[i]
             if (lat < minLat) minLat = lat
