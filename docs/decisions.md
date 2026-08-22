@@ -648,3 +648,23 @@
 - 以降、「選択時点のDBスナップショットを保持する」設計（ALLのような動的境界を持つ状態）を導入する場合、その境界に影響しうる後続のデータ変更（インポート等）が発生した際に再解決するかどうかを明示的に設計する。
 - 非同期の初期化処理とユーザー操作が競合しうる`init`パターンでは、ユーザー操作後に初期化結果を無視するガードを設けるパターンを踏襲する。
 
+---
+
+## D-024: T-017bレビュー指摘への対応方針（commitPreparedImport経由のALL遷移で手動モードが解除されない）
+
+- 日付: 2026-08-22
+- 状態: 採用
+
+### 背景
+- T-017b（D-023の修正）のレビューで、ReviewerがMedium 1件を検出した。`TimelineViewModel.commitPreparedImport`は`periodResolutionGate.isAllSelected`が`true`のとき`resolveAndApplyAllPeriod()`を呼ぶが戻り値を捨てており、`enforceSpeedModeConstraint`を呼ばない。一方`selectAllPeriod()`は同じ関数の戻り値を`?.let { enforceSpeedModeConstraint(it.type) }`で正しく使っている。
+- DB空時のフォールバック（`resolveAllPeriod()`が`Period.of(PeriodType.DAY, LocalDate.now())`を返すケース、`isAllSelected`は`true`のまま`type`だけ`DAY`になる、D-023決定1で導入した意図的な設計）中は`isManualModeAllowed(DAY)==true`のため手動モードを選択可能。この状態で初回インポートを行うと`type`が本物の`ALL`へ遷移するが、`enforceSpeedModeConstraint`が呼ばれないため手動速度モードが解除されず、D-017決定2「全期間選択時は手動固定倍率モードを無効化する」に反するUI/再生状態の不整合が残る。
+
+### 決定
+- `commitPreparedImport`内の`resolveAndApplyAllPeriod()`呼び出しを、`selectAllPeriod()`と同じ`?.let { enforceSpeedModeConstraint(it.type) }`パターンに揃える。他の対応は不要（この1箇所の非対称性のみが原因のため）。
+
+### 理由
+- AGENTS.md原則7（バグは根本原因を直す）に照らし、同一関数の2つの呼び出し元で片方だけ後処理が欠落している非対称性そのものが根本原因であり、揃えることで解消できる。修正は1行で完結し、判定ラダー6に該当する。
+
+### 影響
+- 以降、共通化した関数（`resolveAndApplyAllPeriod`等）を複数箇所から呼ぶ場合、各呼び出し元で必要な後処理（副作用）を揃って行っているか確認するパターンを踏襲する。
+
