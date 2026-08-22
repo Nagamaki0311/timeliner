@@ -17,6 +17,29 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-021b T-021レビュー指摘の修正（期間切替直後、詳細ウィンドウが新期間の境界を誤って使う競合）
+
+### 実施内容
+D-027決定1に基づき、T-021（コミット`5c37d25`）のレビューで指摘されたMedium 1件・Low 1件を修正した。
+
+- **Medium（期間切替直後の詳細ウィンドウ境界不整合）**: `selectPeriod`は`_selectedPeriod.value`を同期的に即時更新するが、`isLongPeriodSelected`・`loadedDetailWindow`は`loadRoute`のIO・計算完了後まで更新されない。この間に旧期間の再生ループ由来で`onPlaybackDataTimeChanged`→`scheduleDetailWindowLoad`が呼ばれると、内部で`_selectedPeriod.value`を読み直すため既に切り替わった新期間の境界を誤って使い、まだ更新されていない旧期間の`_routePoints`へ境界不整合な詳細データをmergeしてしまう可能性があった。
+  - 新設`app/src/main/java/com/nagamaki0311/timeliner/ui/DetailWindowGate.kt`（DB非依存の純Kotlinクラス、`PeriodResolutionGate`と同じ設計）へ、`isLongPeriodSelected`の状態と世代ガード（`beginLoad`/`isCurrent`）を切り出した。`invalidate()`（`isLongPeriodSelected`を即falseへ・世代を進める）と`activate(isLongPeriod)`（`loadRoute`完了時に新期間の判定結果へ更新・世代を進める）の2メソッドを持つ。
+  - `TimelineViewModel.selectPeriod`・`resolveAndApplyAllPeriod`（`resolveAndApplyAllPeriod`もALL選択時の同じ経路のため、レビュー指示どおり同様の競合が起こりうるか確認した上で同じ対策を適用）の両方で、`_selectedPeriod.value = period`の直後・同じ同期区間で新設`invalidateDetailWindow()`（`detailWindowGate.invalidate()`＋進行中の`detailWindowJob`キャンセル）を呼ぶよう変更した。両呼び出しの間に他コルーチンが割り込む余地（suspendポイント）が無いため、`onPlaybackDataTimeChanged`は期間切替と同時に必ず早期returnするようになり、`scheduleDetailWindowLoad`が新期間の境界を誤って捕捉することがなくなる。
+  - `loadRoute`完了時は従来の`resetDetailWindow(basePoints)`を`resetDetailWindow(basePoints, isLongPeriod)`へシグネチャ変更し、内部で`detailWindowGate.activate(isLongPeriod)`を呼ぶことで新期間の正しい状態へ更新する（`_displayRoutePoints`の反映タイミングは従来どおり不変）。
+  - `scheduleDetailWindowLoad`内の世代ガードは`++detailWindowGeneration`/`myGeneration != detailWindowGeneration`から`detailWindowGate.beginLoad()`/`!detailWindowGate.isCurrent(myGeneration)`へ置き換えた（`_selectedPeriod.value != period`のガードは既存のまま維持）。
+  - 完了条件の「競合防止ロジックをDB非依存の純Kotlinコンポーネントへ切り出せないか検討」に対応し、`isLongPeriodSelected`＋世代カウンタを`DetailWindowGate`へ切り出せたため、切り出し断念の記録は不要（過剰な設計変更にはならなかった：既存の`PeriodResolutionGate`と同じ2フィールド・数メソッドの薄いクラスで完結し、`loadedDetailWindow`（`DetailWindow.Range?`）・`detailWindowJob`（`Job?`）はデータ/ジョブそのものであり並行性ガードの本質ではないためViewModel側に残した）。
+  - `app/src/test/java/com/nagamaki0311/timeliner/ui/DetailWindowGateTest.kt`を新設し、`PeriodResolutionGateTest`と同じ手法（`runBlocking`＋`launch`＋`delay`、新規依存追加なし）でD-027決定1が報告したレース条件そのものを再現するテスト（`concurrentDetailWindowLoadDuringPeriodSwitch_invalidateBeforeLoadCompletion_discardsStaleResult`）を含む7件を追加した。`invalidate()`が`beginLoad()`で発行済みの世代を無効化すること、`isLongPeriodSelected`が即falseへ戻ることを検証している。
+- **Low（`DetailWindowTest.kt`に境界一致ケースが無い）**: `merge_detailBoundsExactlyMatchExistingBasePoints_replacesWithoutDuplicationOrGap`を追加し、Reviewer提案の例（`base=[1000,2000,3000,4000]`, `detail=[2000,2500,3000]`）で重複・欠落なくmergeされることを検証した。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（新設`DetailWindowGateTest`7件、`DetailWindowTest`に追加した境界テスト1件を含め全テストパス）。
+- `./gradlew assembleDebug`が成功した。
+- `TimelineViewModel`自体はD-020と同じ制約（`ViewModel`基底クラス・`TimelineRepository`のAndroid API依存）でJVM単体テストからインスタンス化できないため、`selectPeriod`/`resolveAndApplyAllPeriod`が`invalidateDetailWindow()`を正しい同期区間（`_selectedPeriod.value`更新の直後、suspendポイントを挟まない）で呼んでいるかという配線自体はコードレビューで確認した（`selectPeriod`は非suspend関数内で2行連続、`resolveAndApplyAllPeriod`も`suspend`呼び出し前の非suspend区間で2行連続であることをソース上で確認）。並行性ガードの本質的なロジック（`isLongPeriodSelected`の即時リセット・世代ガードによる古い結果の無効化）自体は`DetailWindowGate`へ切り出せたため`DetailWindowGateTest`で直接検証済み。
+- D-027決定1の「対応不要」項目（`needsReload`の高頻度呼び出し、Low/PLAUSIBLE）は今回も対応していない（docs/tasks.mdバックログに記録済み、変更なし）。
+
+### 次回開始位置
+- T-022（560日規模の実データ対応: カメラ制御スパイク検証、S11）に着手する。
+
 ## 2026-08-22 T-021 Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020（本ファイル下方のエントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-021の実施内容・結果・次回開始位置は下記エントリに記録済みでコミット`5c37d25`に含まれているが、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）はT-019b・T-020の記録同様Managerへ要確認のまま。

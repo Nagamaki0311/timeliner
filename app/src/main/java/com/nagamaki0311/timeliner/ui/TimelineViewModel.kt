@@ -122,20 +122,19 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private val _displayRoutePoints = MutableStateFlow<PointBlobCodec.DecodedPoints?>(null)
     val displayRoutePoints: StateFlow<PointBlobCodec.DecodedPoints?> = _displayRoutePoints.asStateFlow()
 
-    /** [loadRoute]が長期間（[RouteOverview]経由）を選択したかどうか。詳細ウィンドウ機構の有効/無効を切り替える。 */
-    private var isLongPeriodSelected = false
+    /**
+     * 詳細ウィンドウ機構（長期間選択時のみ有効な遅延ロード）の有効/無効と、世代ガードによる
+     * 古いロード結果の書き戻し防止を担う（docs/decisions.md D-027決定1）。DB非依存の純Kotlinクラスへ
+     * 切り出し、JVM単体テスト（[DetailWindowGateTest][com.nagamaki0311.timeliner.ui.DetailWindowGateTest]）
+     * できるようにしている（[PeriodResolutionGate]と同じ設計、docs/decisions.md D-020）。
+     */
+    private val detailWindowGate = DetailWindowGate()
 
     /** 現在ロード済みの詳細ウィンドウの日付範囲。未ロードなら`null`（[resetDetailWindow]でリセット）。 */
     private var loadedDetailWindow: DetailWindow.Range? = null
 
     /** [scheduleDetailWindowLoad]で起動した進行中のロードジョブ。新しい要求が来たらキャンセルする（デバウンス）。 */
     private var detailWindowJob: Job? = null
-
-    /**
-     * [scheduleDetailWindowLoad]の呼び出し世代。[RouteOverviewCache]・[PlaybackController.rebuildGeneration]と
-     * 同じ世代ガードパターンで、古いロード結果が新しい状態を上書きしないようにする。
-     */
-    private var detailWindowGeneration = 0L
 
     /**
      * [RouteOverview]のキャッシュ。初回アクセス時に[Dispatchers.Default]上で1度だけ構築し、
@@ -188,10 +187,13 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      * 期間を切り替え、対応するルートデータを読み込み直す（docs/tasks.md T-006）。
      * [periodResolutionGate]へユーザーの明示選択を伝え、進行中（または今後resumeする）全期間解決が
      * この選択を後から上書きしないようにする（docs/decisions.md D-023決定2）。
+     * [_selectedPeriod]の更新と同じ同期区間で[invalidateDetailWindow]も呼び、[loadRoute]完了前に
+     * 旧期間の再生ループ由来の詳細ウィンドウ更新が新期間の境界を誤って使わないようにする（docs/decisions.md D-027決定1）。
      */
     fun selectPeriod(period: Period) {
         periodResolutionGate.selectExplicit()
         _selectedPeriod.value = period
+        invalidateDetailWindow()
         viewModelScope.launch { loadRoute(period) }
         enforceSpeedModeConstraint(period.type)
     }
@@ -211,13 +213,15 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      * （[PeriodResolutionGate.isCurrent]）[_selectedPeriod]・[loadRoute]へ反映する。
      * 解決中に[selectPeriod]でユーザーが別の期間へ切り替えていた場合は反映せず`null`を返す
      * （docs/decisions.md D-023決定2）。[init]・[selectAllPeriod]・インポート成功時（[commitPreparedImport]）の
-     * 3箇所から呼ばれる共通経路。
+     * 3箇所から呼ばれる共通経路。[selectPeriod]と同様、[_selectedPeriod]の更新と同じ同期区間で
+     * [invalidateDetailWindow]を呼ぶ（docs/decisions.md D-027決定1）。
      */
     private suspend fun resolveAndApplyAllPeriod(): Period? {
         val generation = periodResolutionGate.beginResolution()
         val period = resolveAllPeriod()
         if (!periodResolutionGate.isCurrent(generation)) return null
         _selectedPeriod.value = period
+        invalidateDetailWindow()
         loadRoute(period)
         return period
     }
@@ -370,8 +374,7 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         if (_selectedPeriod.value == period) {
             _routePoints.value = loaded?.first
             _routeBounds.value = loaded?.second
-            isLongPeriodSelected = isLongPeriod
-            resetDetailWindow(loaded?.first)
+            resetDetailWindow(loaded?.first, isLongPeriod)
             if (loaded == null) {
                 playbackController.setRoute(DoubleArray(0), DoubleArray(0), LongArray(0))
             } else {
@@ -383,12 +386,12 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     }
 
     /**
-     * 詳細ウィンドウの遅延ロード（docs/tasks.md T-021）。長期間（[isLongPeriodSelected]）選択時のみ有効で、
+     * 詳細ウィンドウの遅延ロード（docs/tasks.md T-021）。長期間（[DetailWindowGate.isLongPeriodSelected]）選択時のみ有効で、
      * 再生中の現在データ時刻[dataTimeMillis]が[loadedDetailWindow]の範囲外へ移動したら
      * [scheduleDetailWindowLoad]で再ロードする。短期間選択時は既に全解像度のためこの機構は不要（何もしない）。
      */
     private fun onPlaybackDataTimeChanged(dataTimeMillis: Long?) {
-        if (!isLongPeriodSelected || dataTimeMillis == null) return
+        if (!detailWindowGate.isLongPeriodSelected || dataTimeMillis == null) return
         if (!DetailWindow.needsReload(loadedDetailWindow, dataTimeMillis)) return
         scheduleDetailWindowLoad(dataTimeMillis)
     }
@@ -402,7 +405,7 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      */
     private fun scheduleDetailWindowLoad(dataTimeMillis: Long) {
         detailWindowJob?.cancel()
-        val myGeneration = ++detailWindowGeneration
+        val myGeneration = detailWindowGate.beginLoad()
         val period = _selectedPeriod.value
         detailWindowJob = viewModelScope.launch {
             delay(DetailWindow.DEBOUNCE_MILLIS)
@@ -418,8 +421,8 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
                 return@launch
             }
             // 世代ガード（古いロードの結果が新しい状態を上書きしない）と、待機中に期間自体が
-            // 切り替わっていた場合の防御（resetDetailWindowで既にリセット済みのはずだが念のため）。
-            if (myGeneration != detailWindowGeneration || _selectedPeriod.value != period) return@launch
+            // 切り替わっていた場合の防御（resetDetailWindow/invalidateDetailWindowで既にリセット済みのはずだが念のため）。
+            if (!detailWindowGate.isCurrent(myGeneration) || _selectedPeriod.value != period) return@launch
             loadedDetailWindow = range
             val basePoints = _routePoints.value
             _displayRoutePoints.value = if (detailDays.isEmpty() || basePoints == null) {
@@ -431,13 +434,28 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     }
 
     /**
-     * 詳細ウィンドウの状態を破棄する（期間切り替え時、[loadRoute]から呼ぶ）。進行中のロードジョブがあれば
-     * キャンセルし、[_displayRoutePoints]を新しい[basePoints]（概観点列の切り出し、または短期間の全解像度点列）
-     * へ戻す。世代を進めることで、破棄直前に発行されていたロードの結果が後から書き戻されないようにする
-     * （[RouteOverviewCache.invalidate]と同じパターン、D-020決定2）。
+     * 期間切り替えの同期区間（[_selectedPeriod]を更新した直後、[selectPeriod]・[resolveAndApplyAllPeriod]から呼ぶ）で
+     * 詳細ウィンドウ機構を即座に無効化する（docs/decisions.md D-027決定1）。[DetailWindowGate.isLongPeriodSelected]を
+     * 即座にfalseへ戻すことで、[loadRoute]完了前に旧期間の再生ループ由来で[onPlaybackDataTimeChanged]が呼ばれても
+     * 早期returnし、[scheduleDetailWindowLoad]が既に切り替わった新期間の境界（`_selectedPeriod`の読み直し）を
+     * 誤って使うことがないようにする。[loadRoute]完了時は[resetDetailWindow]が新期間の正しい状態へ改めて更新する
+     * （[_displayRoutePoints]はここでは触らず、[loadRoute]完了まで旧データを表示し続ける）。
      */
-    private fun resetDetailWindow(basePoints: PointBlobCodec.DecodedPoints?) {
-        detailWindowGeneration++
+    private fun invalidateDetailWindow() {
+        detailWindowGate.invalidate()
+        detailWindowJob?.cancel()
+        detailWindowJob = null
+    }
+
+    /**
+     * 詳細ウィンドウの状態を破棄する（期間切り替え完了時、[loadRoute]から呼ぶ）。進行中のロードジョブがあれば
+     * キャンセルし、[_displayRoutePoints]を新しい[basePoints]（概観点列の切り出し、または短期間の全解像度点列）
+     * へ戻す。[detailWindowGate]の世代を進めることで、破棄直前に発行されていたロードの結果が後から
+     * 書き戻されないようにし（[RouteOverviewCache.invalidate]と同じパターン、D-020決定2）、
+     * [isLongPeriod]（新期間の判定結果）で[DetailWindowGate.isLongPeriodSelected]を更新する。
+     */
+    private fun resetDetailWindow(basePoints: PointBlobCodec.DecodedPoints?, isLongPeriod: Boolean) {
+        detailWindowGate.activate(isLongPeriod)
         detailWindowJob?.cancel()
         detailWindowJob = null
         loadedDetailWindow = null

@@ -86,6 +86,36 @@ class DetailWindowTest {
         assertEquals(listOf(10.0, 20.0, 21.0, 24.0, 29.0, 30.0, 40.0, 50.0), merged.longitudes.toList())
     }
 
+    /**
+     * detail範囲の両端がbaseの既存点と時刻完全一致するケース（docs/decisions.md D-027決定1、Reviewer提案の境界例）。
+     * `lowerBound`/`upperBound`は半開区間的な二分探索のため、一致点をdetail側だけが保持し、base側では
+     * 重複も欠落もなく置き換わることを検証する。
+     */
+    @Test
+    fun merge_detailBoundsExactlyMatchExistingBasePoints_replacesWithoutDuplicationOrGap() {
+        val base = PointBlobCodec.DecodedPoints(
+            latitudes = doubleArrayOf(1.0, 2.0, 3.0, 4.0),
+            longitudes = doubleArrayOf(10.0, 20.0, 30.0, 40.0),
+            timestampsMillis = longArrayOf(1_000L, 2_000L, 3_000L, 4_000L)
+        )
+        // detailの開始時刻(2000)・終了時刻(3000)がどちらもbaseの既存点と完全一致する。
+        val detail = PointBlobCodec.DecodedPoints(
+            latitudes = doubleArrayOf(2.0, 2.5, 3.0),
+            longitudes = doubleArrayOf(20.0, 25.0, 30.0),
+            timestampsMillis = longArrayOf(2_000L, 2_500L, 3_000L)
+        )
+
+        val merged = DetailWindow.merge(base, detail)
+
+        assertEquals(
+            "base[2000]・base[3000]はdetailと完全一致するためdetail側のみが残り、重複も欠落も無いはず",
+            listOf(1_000L, 2_000L, 2_500L, 3_000L, 4_000L),
+            merged.timestampsMillis.toList()
+        )
+        assertEquals(listOf(1.0, 2.0, 2.5, 3.0, 4.0), merged.latitudes.toList())
+        assertEquals(listOf(10.0, 20.0, 25.0, 30.0, 40.0), merged.longitudes.toList())
+    }
+
     @Test
     fun merge_detailCoveringEntireBaseRange_replacesAllBasePoints() {
         val base = PointBlobCodec.DecodedPoints(
