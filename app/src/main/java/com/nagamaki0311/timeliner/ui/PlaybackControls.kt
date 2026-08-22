@@ -84,7 +84,7 @@ private fun SpeedModeRow(speedMode: SpeedMode, manualModeAllowed: Boolean, onSpe
             selected = speedMode is SpeedMode.Auto,
             onClick = {
                 val targetDurationMillis = (speedMode as? SpeedMode.Auto)?.targetDurationMillis
-                    ?: SpeedMode.AUTO_DURATION_OPTIONS_MILLIS[1]
+                    ?: SpeedMode.DEFAULT_AUTO_DURATION_MILLIS
                 onSpeedModeChange(SpeedMode.Auto(targetDurationMillis))
             }
         )

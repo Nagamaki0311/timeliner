@@ -17,6 +17,24 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-018 560日規模の実データ対応: 再生時間選択肢の変更（S7）
+
+### 実施内容
+D-017（S7）に基づき、自動モードの目標再生時間の選択肢と既定値を変更した。
+
+- `PlaybackController.SpeedMode`companion object: `AUTO_DURATION_OPTIONS_MILLIS`を`[10, 30, 60, 120]`秒→`[30, 60, 120, 180, 300]`秒へ変更。`DEFAULT`（`Auto(targetDurationMillis)`）を30秒→60秒へ変更。
+- 新設定数`SpeedMode.DEFAULT_AUTO_DURATION_MILLIS = 60_000L`を追加し、`DEFAULT`はこの定数から組み立てる形にした。
+- `PlaybackControls.kt`（自動ボタン再選択時のフォールバック値）と`ExportDialog.kt`（ダイアログ初期選択値）が`AUTO_DURATION_OPTIONS_MILLIS[1]`という配列インデックス決め打ち（元々`[1]`=30秒だったことに依存する脆い書き方）で既定値を参照していた箇所を、いずれも`SpeedMode.DEFAULT_AUTO_DURATION_MILLIS`経由へ置換した。
+- `PlaybackTimeline.buildAuto`側は`targetDurationMillis > 0`の下限チェックのみで上限チェックは無く、既定値が10秒→60秒に変わっても不都合がないことを確認した。
+- 既存テスト（`PlaybackControllerTest.kt`）は`SpeedMode.DEFAULT`を`(SpeedMode.DEFAULT as SpeedMode.Auto).targetDurationMillis`という形で動的に参照しており、値変更の影響を受けないことを確認した。`PlaybackTimelineTest.kt`もハードコードされた独自の`targetDurationMillis`値（30_000L等）を直接渡しており、`AUTO_DURATION_OPTIONS_MILLIS`/`DEFAULT`には依存していないため修正不要だった。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した（既存テストスイート、失敗0）。
+- `./gradlew assembleDebug`が成功した。
+
+### 次回開始位置
+- D-017（S7まで）の計画上の次段階があればdocs/tasks.mdを確認する。無ければ次のタスク優先度をManagerが判断する。
+
 ## 2026-08-22 補足: subagent-doc-check.pyの既知の誤検知（T-017cコミット後）
 
 T-017cの実施内容・結果・次回開始位置は下記「## 2026-08-22 T-017c T-017bレビュー指摘の修正（commitPreparedImport経由のALL遷移で手動モードが解除されない）」エントリに記録し、コミット`e15c81a`へ含めて提出済み。

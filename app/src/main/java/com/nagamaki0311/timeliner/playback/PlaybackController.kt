@@ -27,14 +27,21 @@ sealed interface SpeedMode {
     data class Manual(val speedMultiplier: Double) : SpeedMode
 
     companion object {
-        /** UIで選択させる自動モードの目標再生時間の候補（docs/decisions.md D-002決定6）。 */
-        val AUTO_DURATION_OPTIONS_MILLIS = listOf(10_000L, 30_000L, 60_000L, 120_000L)
+        /** UIで選択させる自動モードの目標再生時間の候補（docs/decisions.md D-017、T-018）。 */
+        val AUTO_DURATION_OPTIONS_MILLIS = listOf(30_000L, 60_000L, 120_000L, 180_000L, 300_000L)
 
         /** UIで選択させる手動モードの倍率候補。 */
         val MANUAL_SPEED_MULTIPLIER_OPTIONS = listOf(60.0, 300.0, 1800.0, 3600.0)
 
-        /** 既定の速度モード（自動・30秒、D-002決定6）。 */
-        val DEFAULT: SpeedMode = Auto(targetDurationMillis = 30_000L)
+        /**
+         * 自動モードの既定の目標再生時間（60秒、docs/decisions.md D-017、T-018）。
+         * [AUTO_DURATION_OPTIONS_MILLIS]内の並び順に依存しない明示的な定数として、
+         * [PlaybackControls]/[com.nagamaki0311.timeliner.ui.ExportDialog]の既定値選択から参照される。
+         */
+        const val DEFAULT_AUTO_DURATION_MILLIS = 60_000L
+
+        /** 既定の速度モード（自動・60秒、D-017/T-018）。 */
+        val DEFAULT: SpeedMode = Auto(targetDurationMillis = DEFAULT_AUTO_DURATION_MILLIS)
     }
 }
 

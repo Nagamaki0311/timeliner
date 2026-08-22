@@ -33,7 +33,7 @@ fun ExportDialog(
     onShare: (Uri) -> Unit,
     onOpen: (Uri) -> Unit
 ) {
-    var selectedDurationMillis by remember { mutableStateOf(SpeedMode.AUTO_DURATION_OPTIONS_MILLIS[1]) }
+    var selectedDurationMillis by remember { mutableStateOf(SpeedMode.DEFAULT_AUTO_DURATION_MILLIS) }
 
     AlertDialog(
         onDismissRequest = { if (state !is ExportUiState.InProgress) onDismiss() },
