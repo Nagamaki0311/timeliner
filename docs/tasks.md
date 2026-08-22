@@ -58,7 +58,7 @@
 | T-023 | 560日規模の実データ対応: CameraDirector（S12） | 中 | 完了 | developer | D-017参照。純Kotlinの`camera.CameraDirector`を新設（`android.*`非依存）。既存`PlaybackTimeline`の再生時刻を一定間隔(既定5秒)でサンプリングしキーフレーム時刻とし、隣接キーフレーム中点の時間窓に対応するルート点から`GeoBounds`でbbox、新設`CameraZoom`（Web Mercatorのbbox-fit標準式）で中心・ズームを算出。まだT-024/T-025からは未使用（先行実装）。詳細はdocs/progress.md参照 |
 | T-023b | T-023レビュー指摘の修正（隣接キーフレーム窓の境界二重カウント） | 中 | 完了 | developer | D-029参照。`CameraDirector`の窓インデックス解決を`internal fun resolveWindowIndexRange`へ抽出し、隣接窓の共有境界を片側開区間`[dataStart, dataEnd)`にすることで境界点の二重カウントを解消（最後の窓のみ`dataEnd`自身を含む閉区間）。冗長な`lowerBound`二重計算も解消。日付変更線bboxの誤り（D-029決定2）はコード対応せず`CameraZoom`のKDocのみ実態を明記。詳細はdocs/progress.md参照 |
 | T-023c | T-023bレビュー指摘の修正（退化ケースのブラケット処理が境界二重カウントを再導入する） | 中 | 完了 | developer | D-030参照。`resolveWindowIndexRange`は退化ケース（窓内に点が1つも無い場合）でも空範囲`fromIndex == toIndex`（他窓と重複しない、インデックスの所有権のみを扱う）を返すよう単純化。`buildKeyframe`側で空範囲を検知した場合のみ、直前・直後の点の座標を所有権を主張せず読むだけでbboxをブラケットする方式に変更し、「都市間の自然なカメラ遷移」要件を維持したまま境界二重カウントを解消。詳細はdocs/progress.md参照 |
-| T-024 | 560日規模の実データ対応: 画面再生でのカメラ追従（S13） | 中 | 未着手 | developer | D-017参照 |
+| T-024 | 560日規模の実データ対応: 画面再生でのカメラ追従（S13） | 中 | 完了 | developer | D-017/D-028参照。`PlaybackController.rebuildTimeline`で`PlaybackTimeline`と同じ世代ガードの下`CameraDirector.computeKeyframes`を計算し`State.activeCameraKeyframe`として公開。新設`CameraDirector.currentKeyframeIndex`（再生経過ミリ秒から現在のキーフレームを二分探索、純Kotlin）で`publishState`のたびに解決。`TimelineScreen`は再生中（`isPlaying`）のみ`activeCameraKeyframe`の変化を検知して`easeCamera`（固定900ms）で追従、既存`fitBounds`とは独立した`LaunchedEffect`で共存させた。詳細はdocs/progress.md参照 |
 | T-025 | 560日規模の実データ対応: 動画書き出しのカメラ制御（S14） | 高 | 未着手 | developer | D-017参照。地図を下地からBitmapOverlay内部へ移す方式変更（D-009更新） |
 | T-026 | 560日規模の実データ対応: 全体再計測とドキュメント更新（S15） | 中 | 未着手 | developer | D-017参照。最終ステップ |
 
@@ -71,7 +71,7 @@
 - 長期間再生中、`DetailWindow.needsReload`判定が再生フレーム毎（最大60Hz）にメインスレッドで走る件（T-021レビューLow/PLAUSIBLE、処理自体は軽量で実測での性能劣化は未確認・本環境では実機検証不可のため見送り。D-027参照）
 - `DetailWindowGateTest.kt`のKDocが「invalidateを呼ばない場合のレース再現も確認する」と実装範囲より広く主張している記述不一致（T-021bレビューLow、実害なしのため見送り）
 - `CameraZoom.zoomToFitBounds`が日付変更線（経度180度）をまたぐbboxのズームレベルを誤って計算する件（T-023レビューMedium、`GeoBounds`自体の日付変更線非対応というT-006以来の既知の制約に起因。560日規模の実データで日付変更線をまたぐ記録が実際に問題になった時点で対応する。D-029参照）
-- `CameraDirector`で記録点が疎な区間が複数のキーフレーム区間にまたがって続く（退化窓が連続する）場合、各窓が同じ直前・直後の2点をブラケットし続けるため、カメラ位置・ズームが完全に同一のキーフレームが連続する件（T-023cレビューLow、UX上の見え方の懸念のみ。T-024（画面再生でのカメラ追従）着手時に実データでの発生頻度を踏まえ、必要なら間引き等を検討する）
+- `CameraDirector`で記録点が疎な区間が複数のキーフレーム区間にまたがって続く（退化窓が連続する）場合、各窓が同じ直前・直後の2点をブラケットし続けるため、カメラ位置・ズームが完全に同一のキーフレームが連続する件（T-023cレビューLow、UX上の見え方の懸念のみ。T-024完了時点で実機・実データが本環境では利用できず発生頻度を確認できないため見送り継続。実データで実際に問題として体感された時点で間引き等を検討する）
 - 実データ（実際のTimelineエクスポートファイル）でのパーサ検証。ユーザーから個人情報を伏せたサンプル提供を受けられる場合に着手（D-002参照）
 - rawSignalsへの対応（D-002で v1スコープ外と決定。Records.json本体はD-004によりv1スコープに含めることへ変更済み）
 - TrackCleaner.removeSpeedSpikesが点列の先頭・末尾を判定対象外とする構造的な限界への対応（T-004レビューLow、実運用での発生可能性が低いため見送り）

@@ -1,5 +1,6 @@
 package com.nagamaki0311.timeliner.playback
 
+import com.nagamaki0311.timeliner.camera.CameraDirector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -62,7 +63,14 @@ class PlaybackController(private val scope: CoroutineScope) {
         val progress: Float = 0f,
         /** 現在の再生位置に対応するデータ時刻（epochミリ秒）。ルート未設定時はnull。 */
         val dataTimeMillis: Long? = null,
-        val speedMode: SpeedMode = SpeedMode.DEFAULT
+        val speedMode: SpeedMode = SpeedMode.DEFAULT,
+        /**
+         * 現在の再生位置（[CameraDirector.currentKeyframeIndex]）に対応するカメラキーフレーム
+         * （docs/tasks.md T-024、画面再生でのカメラ追従）。ルート未設定・キーフレームが1つも無い場合はnull。
+         * [isPlaying]がfalseの間の自動カメラ追従の要否は呼び出し元（`TimelineScreen`）の責務で、
+         * このプロパティ自体は再生中/停止中を問わず常に現在位置に対応する値を反映する。
+         */
+        val activeCameraKeyframe: CameraDirector.CameraKeyframe? = null
     )
 
     private val _state = MutableStateFlow(State())
@@ -72,6 +80,8 @@ class PlaybackController(private val scope: CoroutineScope) {
 
     private var route: RouteData? = null
     private var timeline: PlaybackTimeline? = null
+    /** [rebuildTimeline]で[timeline]と同時に計算するカメラキーフレーム列（T-024）。[timeline]がnullなら空。 */
+    private var cameraKeyframes: List<CameraDirector.CameraKeyframe> = emptyList()
     private var elapsedPlaybackMillis = 0L
     private var playbackJob: Job? = null
 
@@ -102,25 +112,37 @@ class PlaybackController(private val scope: CoroutineScope) {
         rebuildTimeline()
     }
 
+    /**
+     * [rebuildTimeline]が[Dispatchers.Default]上でまとめて計算する結果（[PlaybackTimeline]と
+     * [CameraDirector.CameraKeyframe]列は同じ[route]/[timeline]から導かれるため、世代ガード（[rebuildGeneration]）
+     * の対象として1組でまとめて扱う、T-024）。
+     */
+    private data class RebuildResult(val timeline: PlaybackTimeline, val cameraKeyframes: List<CameraDirector.CameraKeyframe>)
+
     private suspend fun rebuildTimeline() {
         val myGeneration = ++rebuildGeneration
         val currentRoute = route
         val mode = _state.value.speedMode
-        val newTimeline = if (currentRoute == null) {
+        val result = if (currentRoute == null) {
             null
         } else {
             withContext(Dispatchers.Default) {
-                when (mode) {
+                val newTimeline = when (mode) {
                     is SpeedMode.Auto -> PlaybackTimeline.buildAuto(
                         currentRoute.timestampsMillis, currentRoute.latitudes, currentRoute.longitudes, mode.targetDurationMillis
                     )
                     is SpeedMode.Manual -> PlaybackTimeline.buildManual(currentRoute.timestampsMillis, mode.speedMultiplier)
                 }
+                val keyframes = CameraDirector.computeKeyframes(
+                    currentRoute.timestampsMillis, currentRoute.latitudes, currentRoute.longitudes, newTimeline
+                )
+                RebuildResult(newTimeline, keyframes)
             }
         }
         // withContext中に別のsetRoute/setSpeedMode呼び出しが後から開始・完了していたら、古い結果で上書きしない。
         if (myGeneration != rebuildGeneration) return
-        timeline = newTimeline
+        timeline = result?.timeline
+        cameraKeyframes = result?.cameraKeyframes ?: emptyList()
         publishState()
     }
 
@@ -180,7 +202,9 @@ class PlaybackController(private val scope: CoroutineScope) {
         val total = currentTimeline?.totalPlaybackMillis() ?: 0L
         val progress = if (currentTimeline == null || total <= 0L) 0f else (elapsedPlaybackMillis.toFloat() / total.toFloat()).coerceIn(0f, 1f)
         val dataTime = currentTimeline?.dataTimeAtPlaybackMillis(elapsedPlaybackMillis)
-        _state.update { it.copy(progress = progress, dataTimeMillis = dataTime) }
+        val activeKeyframeIndex = CameraDirector.currentKeyframeIndex(cameraKeyframes, elapsedPlaybackMillis)
+        val activeKeyframe = cameraKeyframes.getOrNull(activeKeyframeIndex)
+        _state.update { it.copy(progress = progress, dataTimeMillis = dataTime, activeCameraKeyframe = activeKeyframe) }
     }
 
     companion object {

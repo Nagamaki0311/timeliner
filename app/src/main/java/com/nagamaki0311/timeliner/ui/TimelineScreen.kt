@@ -179,6 +179,22 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
             fitBounds(currentMap, currentRoute.latitudes, currentRoute.longitudes, currentBounds)
         }
     }
+
+    // 画面再生でのカメラ追従（docs/tasks.md T-024、docs/decisions.md D-028）。CameraDirector.computeKeyframes
+    // （PlaybackControllerが再生位置ごとにplaybackState.activeCameraKeyframeへ計算済み）が切り替わるたびに
+    // easeCameraで滑らかに追従する。再生中（isPlaying）のみ発火し、一時停止・停止中は上のfitBoundsや
+    // ユーザーの手動パン・ズームを妨げないよう何もしない（再生停止時にfitBoundsへ戻す処理も行わない、
+    // ユーザーがその場に留まって見続けられる方が自然という要件）。キーは
+    // activeCameraKeyframe自体（値が変わった時のみ発火、同じキーフレームの間は毎フレーム再発火しない）。
+    LaunchedEffect(playbackState.activeCameraKeyframe, playbackState.isPlaying, map) {
+        val currentMap = map ?: return@LaunchedEffect
+        val keyframe = playbackState.activeCameraKeyframe ?: return@LaunchedEffect
+        if (!playbackState.isPlaying) return@LaunchedEffect
+        currentMap.easeCamera(
+            CameraUpdateFactory.newLatLngZoom(LatLng(keyframe.centerLatitude, keyframe.centerLongitude), keyframe.zoom),
+            CAMERA_FOLLOW_DURATION_MILLIS
+        )
+    }
 }
 
 /**
@@ -200,3 +216,12 @@ private fun fitBounds(map: MapLibreMap, latitudes: DoubleArray, longitudes: Doub
 
 private const val SINGLE_POINT_ZOOM = 15.0
 private const val FIT_BOUNDS_PADDING_PX = 64
+
+/**
+ * 画面再生でのカメラ追従（[TimelineScreen]内の`LaunchedEffect(playbackState.activeCameraKeyframe, ...)`）で
+ * 使う`easeCamera`のアニメーション時間。キーフレーム間隔の既定値（`CameraDirector`の5秒）より十分短い
+ * 固定値とすることで、次のキーフレームへ切り替わる前にアニメーションが収まり、滑らかに追従しているように
+ * 見えるようにする（docs/tasks.md T-024。次のキーフレームまでの実際の間隔を都度受け渡す設計も検討したが、
+ * AGENTS.md判定ラダー「過度に複雑な配線をしない」に従い固定値を採用した）。
+ */
+private const val CAMERA_FOLLOW_DURATION_MILLIS = 900

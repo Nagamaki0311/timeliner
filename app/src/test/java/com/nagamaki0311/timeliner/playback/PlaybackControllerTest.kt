@@ -1,5 +1,6 @@
 package com.nagamaki0311.timeliner.playback
 
+import com.nagamaki0311.timeliner.camera.CameraDirector
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -101,5 +102,38 @@ class PlaybackControllerTest {
         assertNotEquals(discardedDataTime, expectedDataTime)
         assertEquals(expectedDataTime, controller.state.value.dataTimeMillis)
         assertEquals(commonMode, controller.state.value.speedMode)
+    }
+
+    /**
+     * [PlaybackController.State.activeCameraKeyframe]（docs/tasks.md T-024）が、[CameraDirector.computeKeyframes]/
+     * [CameraDirector.currentKeyframeIndex]を[setRoute]時点のルート・タイムラインへ直接適用した結果と一致することを
+     * 確認する（`rebuildTimeline`内で同じ入力から計算していることの検証、PlaybackControllerTestの既存パターンに倣う）。
+     */
+    @Test
+    fun setRoute_activeCameraKeyframeMatchesCameraDirectorComputedFromSameRouteAndTimeline() {
+        val controller = newController()
+        runBlocking { controller.setRoute(routeB.first, routeB.second, routeB.third) }
+
+        val expectedTimeline = PlaybackTimeline.buildAuto(
+            routeB.third, routeB.first, routeB.second, (SpeedMode.DEFAULT as SpeedMode.Auto).targetDurationMillis
+        )
+        val expectedKeyframes = CameraDirector.computeKeyframes(routeB.third, routeB.first, routeB.second, expectedTimeline)
+
+        controller.seekTo(0.5f)
+
+        val expectedElapsed = (0.5f * expectedTimeline.totalPlaybackMillis()).toLong()
+        val expectedIndex = CameraDirector.currentKeyframeIndex(expectedKeyframes, expectedElapsed)
+
+        assertEquals(expectedKeyframes[expectedIndex], controller.state.value.activeCameraKeyframe)
+    }
+
+    /** ルート未設定（[setRoute]に空配列）の場合、[PlaybackController.State.activeCameraKeyframe]はnullのまま。 */
+    @Test
+    fun setRoute_emptyRoute_activeCameraKeyframeIsNull() {
+        val controller = newController()
+
+        runBlocking { controller.setRoute(DoubleArray(0), DoubleArray(0), LongArray(0)) }
+
+        assertEquals(null, controller.state.value.activeCameraKeyframe)
     }
 }

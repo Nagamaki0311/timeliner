@@ -364,6 +364,67 @@ class CameraDirectorTest {
         assertEquals(CameraZoom.MAX_ZOOM, keyframes[1].zoom, 1e-9)
     }
 
+    // ---- currentKeyframeIndex（T-024、画面再生でのカメラ追従が「現在のキーフレーム」を特定するロジック） ----
+
+    @Test
+    fun currentKeyframeIndex_emptyKeyframes_returnsMinusOne() {
+        assertEquals(-1, CameraDirector.currentKeyframeIndex(emptyList(), 1_000L))
+    }
+
+    @Test
+    fun currentKeyframeIndex_beforeFirstKeyframe_returnsFirstIndex() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(1_000L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(2_000L, 35.1, 139.1, 10.0)
+        )
+
+        assertEquals(0, CameraDirector.currentKeyframeIndex(keyframes, 0L))
+    }
+
+    @Test
+    fun currentKeyframeIndex_afterLastKeyframe_returnsLastIndex() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
+        )
+
+        assertEquals(1, CameraDirector.currentKeyframeIndex(keyframes, 5_000L))
+    }
+
+    @Test
+    fun currentKeyframeIndex_exactMatch_returnsThatIndex() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0),
+            CameraDirector.CameraKeyframe(2_000L, 35.2, 139.2, 10.0)
+        )
+
+        assertEquals(1, CameraDirector.currentKeyframeIndex(keyframes, 1_000L))
+    }
+
+    @Test
+    fun currentKeyframeIndex_betweenTwoKeyframes_returnsNearestOne() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
+        )
+
+        // 中点(500)より前は前のキーフレーム、後は次のキーフレームに近いと判定される。
+        assertEquals(0, CameraDirector.currentKeyframeIndex(keyframes, 499L))
+        assertEquals(1, CameraDirector.currentKeyframeIndex(keyframes, 501L))
+    }
+
+    @Test
+    fun currentKeyframeIndex_exactlyAtMidpoint_prefersEarlierKeyframe() {
+        // 同点(previousGap == nextGap)は、キーフレーム切替を最小限にする実装上の選択として前者を優先する。
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
+        )
+
+        assertEquals(0, CameraDirector.currentKeyframeIndex(keyframes, 500L))
+    }
+
     private fun buildMultiDaySyntheticRoute(): Triple<LongArray, DoubleArray, DoubleArray> {
         // 3日分、1日あたり滞在(密なクラスタ)＋短い移動、という典型的なパターンを模した合成データ。
         val timestamps = mutableListOf<Long>()

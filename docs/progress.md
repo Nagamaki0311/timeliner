@@ -2,6 +2,26 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-22 T-024 画面再生でのカメラ追従（S13）
+
+### 実施内容
+- D-028決定（`MapSnapshotter`不要、画面表示中の`MapLibreMap`へ直接カメラ移動を指示すればよい）に従い、T-023で実装済みだがどこからも未使用だった`CameraDirector.computeKeyframes`を実際の画面再生へ組み込んだ。
+- **`PlaybackController.kt`**: `rebuildTimeline`（`setRoute`/`setSpeedMode`で呼ばれる既存の`Dispatchers.Default`ブロック）内で、`PlaybackTimeline`の構築と同じタイミング・同じ世代ガード（`rebuildGeneration`）の下で`CameraDirector.computeKeyframes(timestampsMillis, latitudes, longitudes, timeline)`も呼び、結果を`RebuildResult`（`timeline`と`cameraKeyframes`の組）としてまとめて世代ガード判定後に反映するようにした（`viewportWidthPx`/`viewportHeightPx`は指示に従い既定値1080×1080のまま、実際の地図表示領域サイズの配線はしない）。`State`に`activeCameraKeyframe: CameraDirector.CameraKeyframe?`を追加し、`publishState`（`play`ループ・`seekTo`・`rebuildTimeline`いずれからも呼ばれる既存の一元箇所）で毎回`CameraDirector.currentKeyframeIndex(cameraKeyframes, elapsedPlaybackMillis)`から解決する。
+- **`CameraDirector.kt`**: 「現在のデータ時刻（正確には現在の再生経過ミリ秒）からキーフレームリスト中の現在のキーフレームを特定する」ロジックを`currentKeyframeIndex(keyframes, playbackMillis): Int`として新設した（DB/Android非依存の純Kotlin）。`keyframes`が`playbackMillis`昇順である前提で二分探索し、最も近いキーフレームのインデックスを返す。等距離（ちょうど中点）の場合は前者を優先する実装上の選択とした。「最も近いキーフレーム」という基準は、`computeKeyframes`内部の窓分割（隣接キーフレームの中点で区切った時間窓）と数学的に等価（中点はちょうど2つのキーフレームの中間のため）。
+- **`TimelineScreen.kt`**: 既存の`fitBounds`用`LaunchedEffect(route, routeBounds, map)`とは独立した新しい`LaunchedEffect(playbackState.activeCameraKeyframe, playbackState.isPlaying, map)`を追加。`isPlaying`がtrueかつ`activeCameraKeyframe`が非nullの場合のみ`map.easeCamera(CameraUpdateFactory.newLatLngZoom(...), CAMERA_FOLLOW_DURATION_MILLIS)`を呼ぶ。キーフレームが切り替わらない限り`activeCameraKeyframe`（`PlaybackController`側で同じリストの同じ要素を参照し続ける）は同一値のままなので、Composeの`LaunchedEffect`キー比較により、実際にキーフレームが切り替わった時だけ発火する（`playbackState`自体は16ms間隔で更新されるが、`activeCameraKeyframe`が変化しない限り再発火しない）。一時停止・停止中（`isPlaying=false`）は早期returnし、既存の`fitBounds`・ユーザーの手動パン/ズームを妨げない。再生停止時に自動でfitBoundsへ戻す処理は指示通り実装しなかった。
+- **アニメーション時間**: `CAMERA_FOLLOW_DURATION_MILLIS = 900`（固定値、`TimelineScreen.kt`内のprivate const）を採用した。次のキーフレームまでの実際の間隔を都度受け渡す設計（`CameraDirector.DEFAULT_KEYFRAME_INTERVAL_MILLIS`=5秒を公開して使う等）も検討したが、AGENTS.md判定ラダー「過度に複雑な配線をしない」という指示文言に従い、キーフレーム間隔の既定値（5秒）より十分短い固定値とすることで、次のキーフレーム切替前にアニメーションが収まり滑らかに追従して見えるようにする方針にした。
+- **`fitBounds`との競合**: 両者は別々の`LaunchedEffect`（別々のkey）として独立させ、厳密な排他制御（例: 再生開始直後は`fitBounds`を抑制する等）は実装しなかった。再生開始時に`route`/`routeBounds`が変化していなければ`fitBounds`側の`LaunchedEffect`は再発火しないため、通常操作（期間固定のまま再生開始）では競合しない。期間切替と同時に再生開始するような操作では両方のアニメーションが短時間重なる可能性があるが、指示にある「軽微な視覚的重なり程度であれば許容範囲」の判断に基づき、追加の排他制御は行わなかった。
+
+### 結果
+- `CameraDirectorTest.kt`に`currentKeyframeIndex`用のテスト6件を追加（空リスト、最初のキーフレームより前、最後のキーフレームより後、ちょうど一致、2つの間（前寄り/後寄り）、ちょうど中点（前者優先）を検証）。
+- `PlaybackControllerTest.kt`に2件追加: (1) `setRoute`後の`state.value.activeCameraKeyframe`が、同じルート・タイムラインに対して`CameraDirector.computeKeyframes`/`currentKeyframeIndex`を直接呼んだ結果と一致すること（`rebuildTimeline`内部の統合を検証）、(2) 空ルートでは`activeCameraKeyframe`がnullのままであること。既存の`runBlocking`+`launch`パターンに倣い新規依存は追加していない。
+- `TimelineScreen.kt`（Compose UI、`easeCamera`の実際の呼び出し・アニメーション見た目）はJVM単体テスト対象外（既存の制約と同じ、実機・エミュレータ無しのため目視確認も未実施）。
+- `./gradlew testDebugUnitTest`成功（`CameraDirectorTest`22件・`PlaybackControllerTest`4件を含む全件`failures=0, errors=0`を`test-results`のXMLで確認）。`./gradlew assembleDebug`成功。既存テストに回帰なし。
+
+### 次回開始位置
+- T-025（動画書き出しのカメラ制御、S14）に着手する。D-028決定に従い、`VideoExporter`が現在1回だけ呼んでいる`awaitSnapshot`（`MapLibreMap.snapshot()`ベース）を、`CameraDirector.computeKeyframes`のキーフレーム数分だけ`MapSnapshotter`を逐次呼び出す方式へ置き換える設計になる見込み（詳細はD-028「影響」参照）。
+- 懸念点（将来的な見直し候補）: `viewportWidthPx`/`viewportHeightPx`を実際の地図表示領域サイズに合わせる配線は本タスクでは行わなかった（既定値1080×1080のまま）。ズームレベルの精度がわずかにずれる可能性があるが、致命的ではないと判断し見送った。実機での見え方次第で今後配線を検討する。
+
 ## 2026-08-22 T-023c Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020・T-021・T-021b・T-022・T-023・T-023b（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-023cの実施内容・結果・次回開始位置は下記エントリ「## 2026-08-22 T-023c T-023bレビュー指摘の修正（退化ケースのブラケット処理が境界二重カウントを再導入する、D-030）」に記録済みでコミット`856575b`に含まれている（`git show --stat 856575b`で`docs/progress.md`が変更ファイルに含まれることを確認済み）が、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）は過去タスクの記録同様Managerへ要確認のまま。
