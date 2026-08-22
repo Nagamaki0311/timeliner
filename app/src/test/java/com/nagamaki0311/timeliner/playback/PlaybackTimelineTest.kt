@@ -71,6 +71,115 @@ class PlaybackTimelineTest {
         )
     }
 
+    // ---- 関心度モデルの頭打ち・密度反映（T-019） ----
+
+    @Test
+    fun buildAuto_stationarySaturation_longStayGetsFarLessThanLinearShare() {
+        // 短い滞在(30分)・長い滞在(8時間、30分のちょうど16倍)それぞれの後に、比較の基準となる
+        // 大きな移動区間(約50km)を共通で挟む。基準区間の関心度はほぼ一定であるため、滞在時間の頭打ちが
+        // 無ければ滞在区間の再生時間比率は滞在時間にほぼ比例し、長い滞在の比率は短い滞在の16倍近くまで
+        // 増えるはずである。頭打ちがあれば大幅に抑えられるはずであることを確認する。
+        fun stayPlaybackFraction(stayMillis: Long): Double {
+            val timestamps = longArrayOf(0L, stayMillis, stayMillis + 1_000L)
+            val latitudes = doubleArrayOf(35.0, 35.0, 35.45) // 約50km北
+            val longitudes = doubleArrayOf(139.0, 139.0, 139.0)
+            val timeline = PlaybackTimeline.buildAuto(timestamps, latitudes, longitudes, targetDurationMillis = 60_000L)
+            val stayPlaybackMillis = timeline.playbackMillisAtDataTime(stayMillis)
+            return stayPlaybackMillis.toDouble() / timeline.totalPlaybackMillis().toDouble()
+        }
+
+        val shortStayMillis = 30L * 60L * 1000L // 30分
+        val longStayMillis = 8L * 60L * 60L * 1000L // 8時間 = 30分の16倍
+
+        val shortFraction = stayPlaybackFraction(shortStayMillis)
+        val longFraction = stayPlaybackFraction(longStayMillis)
+        val ratio = longFraction / shortFraction
+
+        assertTrue(
+            "頭打ちがあっても、滞在時間が長い方が再生時間比率は大きいはず: " +
+                "shortFraction=$shortFraction, longFraction=$longFraction",
+            longFraction > shortFraction
+        )
+        assertTrue(
+            "滞在時間の頭打ちにより、8時間滞在の再生時間比率は30分滞在の単純16倍比例よりずっと小さいはず: " +
+                "shortFraction=$shortFraction, longFraction=$longFraction, ratio=$ratio",
+            ratio < 4.0
+        )
+    }
+
+    @Test
+    fun buildAuto_movementSaturation_singleLongSegmentGetsLessShareThanSplitEquivalent() {
+        // 総距離500km・総所要時間500秒の移動を、1区間でまとめて行う場合と、25区間(20kmずつ)に
+        // 分割して行う場合を比較する。比較の基準として、移動の後に共通の滞在区間(1時間)を挟む。
+        // 頭打ちが無ければ移動区間全体の関心度への寄与は分割の有無によらず同じ(距離の合計・
+        // 所要時間の合計は同一)はずだが、頭打ちにより1区間へ集約した場合の方が
+        // 移動区間の再生時間シェアが小さくなる(1区間が過剰占有しない)ことを確認する。
+        val totalDistanceDegreesLat = 4.5 // 緯度1度 ≈ 111km、4.5度 ≈ 約500km
+        val totalMovementDurationMillis = 500_000L // 移動全体で500秒
+        val referenceStayMillis = 3_600_000L // 共通の基準区間: 1時間滞在
+
+        fun movementPlaybackFraction(segmentCount: Int): Double {
+            val movementTimestamps = LongArray(segmentCount + 1) { i ->
+                totalMovementDurationMillis * i / segmentCount
+            }
+            val movementLatitudes = DoubleArray(segmentCount + 1) { i ->
+                35.0 + totalDistanceDegreesLat * i / segmentCount
+            }
+            val movementLongitudes = DoubleArray(segmentCount + 1) { 139.0 }
+
+            val timestamps = movementTimestamps + (movementTimestamps.last() + referenceStayMillis)
+            val latitudes = movementLatitudes + movementLatitudes.last()
+            val longitudes = movementLongitudes + movementLongitudes.last()
+
+            val timeline = PlaybackTimeline.buildAuto(timestamps, latitudes, longitudes, targetDurationMillis = 60_000L)
+            val movementEndPlaybackMillis = timeline.playbackMillisAtDataTime(movementTimestamps.last())
+            return movementEndPlaybackMillis.toDouble() / timeline.totalPlaybackMillis().toDouble()
+        }
+
+        val singleSegmentFraction = movementPlaybackFraction(segmentCount = 1)
+        val splitSegmentFraction = movementPlaybackFraction(segmentCount = 25)
+
+        assertTrue(
+            "移動距離の頭打ちにより、500kmを1区間にまとめた場合の再生時間シェアは、" +
+                "25区間に分割した場合より明確に小さいはず: " +
+                "singleSegmentFraction=$singleSegmentFraction, splitSegmentFraction=$splitSegmentFraction",
+            splitSegmentFraction - singleSegmentFraction > 0.1
+        )
+    }
+
+    @Test
+    fun buildAuto_eventDensity_denserPointsWithinSameTimeAndDistanceGetMoreInterest() {
+        // 同じ実時間(300秒)・同じ総移動距離(3km)の区間を、疎(2点=1区間)と密(11点=10区間)で構築し、
+        // 比較の基準として共通の滞在区間(1時間)を後ろに挟む。点の密度自体が関心度に寄与するなら、
+        // 密な方が区間の再生時間シェアが大きくなるはずである。
+        val totalDurationMillis = 300_000L // 5分
+        val totalDistanceDegreesLat = 0.027 // 緯度1度 ≈ 111km、0.027度 ≈ 約3km
+        val referenceStayMillis = 3_600_000L
+
+        fun sectionPlaybackFraction(pointCount: Int): Double {
+            val sectionTimestamps = LongArray(pointCount) { i -> totalDurationMillis * i / (pointCount - 1) }
+            val sectionLatitudes = DoubleArray(pointCount) { i -> 35.0 + totalDistanceDegreesLat * i / (pointCount - 1) }
+            val sectionLongitudes = DoubleArray(pointCount) { 139.0 }
+
+            val timestamps = sectionTimestamps + (sectionTimestamps.last() + referenceStayMillis)
+            val latitudes = sectionLatitudes + sectionLatitudes.last()
+            val longitudes = sectionLongitudes + sectionLongitudes.last()
+
+            val timeline = PlaybackTimeline.buildAuto(timestamps, latitudes, longitudes, targetDurationMillis = 60_000L)
+            val sectionEndPlaybackMillis = timeline.playbackMillisAtDataTime(sectionTimestamps.last())
+            return sectionEndPlaybackMillis.toDouble() / timeline.totalPlaybackMillis().toDouble()
+        }
+
+        val sparseFraction = sectionPlaybackFraction(pointCount = 2)
+        val denseFraction = sectionPlaybackFraction(pointCount = 11)
+
+        assertTrue(
+            "同じ実時間・同じ総移動距離でも、記録点が密な区間の方が再生時間シェアは大きいはず: " +
+                "sparseFraction=$sparseFraction, denseFraction=$denseFraction",
+            denseFraction > sparseFraction
+        )
+    }
+
     // ---- 単調性 ----
 
     @Test

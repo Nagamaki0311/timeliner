@@ -17,6 +17,30 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-019 560日規模の実データ対応: 関心度モデルの改善（S8）
+
+### 実施内容
+D-017（S8）に基づき、`PlaybackTimeline.buildAuto`の関心度モデル（画面再生・動画書き出し共有、D-002）を改善した。従来モデル「関心度増分 = α×dt + β×distance」（線形）に対し、以下3点を追加した。
+
+- **滞在時間の頭打ち**: α×dtのdtを、指数飽和関数`saturate(value, cap) = cap × (1 - exp(-value / cap))`で頭打ちしてから使う。`cap`（`stationarySaturationMillis`、既定30分=1,800,000ms）に対しdtが十分小さいうちはほぼ線形（従来通り）、大きくなるほど`cap`へ漸近する。深夜の長時間睡眠や560日規模ALL再生での長期滞在が、実時間比例で再生時間予算を消費し続けないようにするため。
+- **長距離移動の頭打ち**: β×distanceのdistanceも同じ`saturate`関数で頭打ちする（`movementSaturationMeters`、既定5km）。市街地の通常移動（数十m〜数百m/区間）ではほぼ線形のまま、飛行機移動等の一度の長距離移動区間が他区間の再生ペースを圧迫しないようにするため。
+- **イベント密度の反映**: 隣接点1区間ごとに定数`densityWeightMillis`（既定300ms相当）を関心度へ加算する。dt・distanceに依存しないため、同じ実時間・距離でも記録点が密な区間（区間数が多い区間）ほど関心度が高くなる。
+- 3つの新パラメータは`buildAuto`のデフォルト引数として追加し、呼び出し元（`PlaybackController.setSpeedMode`・`TimelineViewModel.exportVideo`）は無変更で新デフォルト値を使う（シグネチャ変更不要、既存呼び出しはすべて位置引数4つのみ渡している）。
+- 定数の選定根拠: `stationarySaturationMillis`=30分は、8時間睡眠(30分の16倍)に対する関心度倍率が約1.6倍程度に収まる値（線形なら16倍）。`movementSaturationMeters`=5kmは、通常のGPS点間距離（市街地移動で数十m〜数kmオーダー）では大きな影響を与えず、数百km規模の移動区間でのみ強く効く値。`densityWeightMillis`=300msは、典型的な区間のα×dt寄与（数秒〜数十秒相当）に対して十分小さく、通常の挙動を大きく変えない一方、点数が10倍程度に増える区間では合算で無視できない差になる値。いずれも判定ラダー7（要件を満たす最小実装）に沿い、パラメータ数を増やしすぎない範囲（頭打り2種+密度項1種のみ）に留めた。
+
+### 結果
+- `PlaybackTimelineTest.kt`に新規テスト3件を追加し、既存15件と合わせて全18件が成功することを確認した。
+  - `buildAuto_stationarySaturation_longStayGetsFarLessThanLinearShare`: 8時間滞在の再生時間比率は、30分滞在の単純16倍比例よりずっと小さい（ratio < 4.0）ことをassertTrueで確認（比較用の共通移動区間を挟んで検証）。
+  - `buildAuto_movementSaturation_singleLongSegmentGetsLessShareThanSplitEquivalent`: 500kmを1区間でまとめた場合の再生時間シェア(実測約0.777)は、同じ総距離を25区間(20kmずつ)に分割した場合のシェア(実測約0.988)より明確に小さい（差0.1超）ことを確認。
+  - `buildAuto_eventDensity_denserPointsWithinSameTimeAndDistanceGetMoreInterest`: 同じ実時間(5分)・総距離(3km)の区間で、11点(10区間)の密な場合の再生時間シェアが、2点(1区間)の疎な場合より大きいことを確認。
+  - 既存テスト`buildAuto_stationaryPeriodIsCompressedRelativeToMovementPeriod`は新モデルでも意図通り成立する（頭打り後もdt=1時間の滞在よりdt=1秒・distance≈1kmの移動の方が「データ経過時間あたりの再生時間比率」が大きいことを、値を変更せず確認済み）。
+- `./gradlew testDebugUnitTest`が成功した（全テストスイート、失敗0）。
+- `./gradlew assembleDebug`が成功した。
+- `PlaybackController`・`TimelineViewModel`（`buildAuto`の全呼び出し元）は無変更で動作することを確認した。
+
+### 次回開始位置
+- T-020（560日規模の実データ対応: ポリライン分断と軌跡の描き分け、S9）にD-017の計画に従って着手する。
+
 ## 2026-08-22 T-018 560日規模の実データ対応: 再生時間選択肢の変更（S7）
 
 ### 実施内容
