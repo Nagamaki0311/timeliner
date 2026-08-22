@@ -14,6 +14,7 @@ import com.nagamaki0311.timeliner.playback.PlaybackController
 import com.nagamaki0311.timeliner.playback.PlaybackTimeline
 import com.nagamaki0311.timeliner.playback.SpeedMode
 import com.nagamaki0311.timeliner.process.GeoBounds
+import com.nagamaki0311.timeliner.store.DetailWindow
 import com.nagamaki0311.timeliner.store.PointBlobCodec
 import com.nagamaki0311.timeliner.store.RouteOverview
 import com.nagamaki0311.timeliner.store.RouteOverviewCache
@@ -23,9 +24,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -91,8 +95,10 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     /**
      * [selectedPeriod]に対応するルートの点列。短期間（[SHORT_PERIOD_MAX_DAYS]日以下）は`days`行から
      * 全解像度で取得し、長期間は[RouteOverview]（日ごとに小予算でDPした概観点列）から該当区間を
-     * 切り出す（docs/tasks.md T-014・docs/decisions.md D-017）。いずれも[com.nagamaki0311.timeliner.render.RouteOverlayView]側で
-     * 表示ズームに応じてさらに簡略化する想定。データが無い期間は`null`。
+     * 切り出す（docs/tasks.md T-014・docs/decisions.md D-017）。動画書き出し（[exportVideo]）と
+     * [routeBounds]（fitBounds用）が参照する。画面描画（[com.nagamaki0311.timeliner.render.RouteOverlayView]）は
+     * この点列に再生位置近傍の全解像度データを重ねた[displayRoutePoints]を使う（docs/tasks.md T-021）。
+     * データが無い期間は`null`。
      */
     private val _routePoints = MutableStateFlow<PointBlobCodec.DecodedPoints?>(null)
     val routePoints: StateFlow<PointBlobCodec.DecodedPoints?> = _routePoints.asStateFlow()
@@ -104,6 +110,32 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
     private val _isRouteLoading = MutableStateFlow(false)
     /** 選択期間のルート読み込み中（[RouteOverview]の初回構築を含みうる）にtrueになる（docs/tasks.md T-014）。 */
     val isRouteLoading: StateFlow<Boolean> = _isRouteLoading.asStateFlow()
+
+    /**
+     * 画面描画（[com.nagamaki0311.timeliner.render.RouteOverlayView]）へ渡す点列（docs/tasks.md T-021・docs/decisions.md D-017）。
+     * 短期間選択時は[_routePoints]と同一（既に全解像度のため詳細ウィンドウは不要）。長期間（[RouteOverview]経由）選択時は、
+     * 再生中の現在データ時刻（[PlaybackController.State.dataTimeMillis]）近傍の日付範囲だけ[DetailWindow]で
+     * 全解像度データを遅延ロードし、[_routePoints]（概観点列の切り出し）の該当区間と[DetailWindow.merge]で
+     * 差し替えたものになる。動画書き出し（[exportVideo]）は[_routePoints]をそのまま使うため、この機構の対象外
+     * （スコープ外、docs/decisions.md D-017「影響」参照。T-022以降のカメラ制御設計で改めて検討する）。
+     */
+    private val _displayRoutePoints = MutableStateFlow<PointBlobCodec.DecodedPoints?>(null)
+    val displayRoutePoints: StateFlow<PointBlobCodec.DecodedPoints?> = _displayRoutePoints.asStateFlow()
+
+    /** [loadRoute]が長期間（[RouteOverview]経由）を選択したかどうか。詳細ウィンドウ機構の有効/無効を切り替える。 */
+    private var isLongPeriodSelected = false
+
+    /** 現在ロード済みの詳細ウィンドウの日付範囲。未ロードなら`null`（[resetDetailWindow]でリセット）。 */
+    private var loadedDetailWindow: DetailWindow.Range? = null
+
+    /** [scheduleDetailWindowLoad]で起動した進行中のロードジョブ。新しい要求が来たらキャンセルする（デバウンス）。 */
+    private var detailWindowJob: Job? = null
+
+    /**
+     * [scheduleDetailWindowLoad]の呼び出し世代。[RouteOverviewCache]・[PlaybackController.rebuildGeneration]と
+     * 同じ世代ガードパターンで、古いロード結果が新しい状態を上書きしないようにする。
+     */
+    private var detailWindowGeneration = 0L
 
     /**
      * [RouteOverview]のキャッシュ。初回アクセス時に[Dispatchers.Default]上で1度だけ構築し、
@@ -140,6 +172,16 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      */
     init {
         viewModelScope.launch { resolveAndApplyAllPeriod() }
+        // 詳細ウィンドウの遅延ロード（docs/tasks.md T-021）: 再生中の現在データ時刻が変化するたびに
+        // ロード要否を判定する。playbackControllerのStateFlowは16ms間隔で更新されうるが、
+        // distinctUntilChangedで実際に値が変わった時のみ、かつscheduleDetailWindowLoad側のデバウンスで
+        // 毎フレーム再ロードが走らないようにする。
+        viewModelScope.launch {
+            playbackController.state
+                .map { it.dataTimeMillis }
+                .distinctUntilChanged()
+                .collect { dataTimeMillis -> onPlaybackDataTimeChanged(dataTimeMillis) }
+        }
     }
 
     /**
@@ -304,9 +346,10 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
      */
     private suspend fun loadRoute(period: Period) {
         _isRouteLoading.value = true
+        val spanDays = ChronoUnit.DAYS.between(period.startDate, period.endDate) + 1
+        val isLongPeriod = spanDays > SHORT_PERIOD_MAX_DAYS
         val loaded = try {
-            val spanDays = ChronoUnit.DAYS.between(period.startDate, period.endDate) + 1
-            if (spanDays <= SHORT_PERIOD_MAX_DAYS) {
+            if (!isLongPeriod) {
                 withContext(Dispatchers.IO) {
                     val days = repository.queryDays(period.startDate.toString(), period.endDate.toString())
                     if (days.isEmpty()) null else {
@@ -327,6 +370,8 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
         if (_selectedPeriod.value == period) {
             _routePoints.value = loaded?.first
             _routeBounds.value = loaded?.second
+            isLongPeriodSelected = isLongPeriod
+            resetDetailWindow(loaded?.first)
             if (loaded == null) {
                 playbackController.setRoute(DoubleArray(0), DoubleArray(0), LongArray(0))
             } else {
@@ -335,6 +380,68 @@ class TimelineViewModel(private val repository: TimelineRepository) : ViewModel(
             }
             _isRouteLoading.value = false
         }
+    }
+
+    /**
+     * 詳細ウィンドウの遅延ロード（docs/tasks.md T-021）。長期間（[isLongPeriodSelected]）選択時のみ有効で、
+     * 再生中の現在データ時刻[dataTimeMillis]が[loadedDetailWindow]の範囲外へ移動したら
+     * [scheduleDetailWindowLoad]で再ロードする。短期間選択時は既に全解像度のためこの機構は不要（何もしない）。
+     */
+    private fun onPlaybackDataTimeChanged(dataTimeMillis: Long?) {
+        if (!isLongPeriodSelected || dataTimeMillis == null) return
+        if (!DetailWindow.needsReload(loadedDetailWindow, dataTimeMillis)) return
+        scheduleDetailWindowLoad(dataTimeMillis)
+    }
+
+    /**
+     * [DetailWindow.DEBOUNCE_MILLIS]待ってから[dataTimeMillis]近傍の日付範囲を`repository.queryDays`で
+     * 全解像度ロードし、[_routePoints]（概観点列の切り出し）と[DetailWindow.merge]して[_displayRoutePoints]へ
+     * 反映する。連続した再生位置の変化で呼ばれるたびに[detailWindowJob]を差し替える（＝進行中のジョブを
+     * キャンセルする）ことでデバウンスする（[RouteOverlayView][com.nagamaki0311.timeliner.render.RouteOverlayView]の
+     * `scheduleSimplify`と同じパターン、T-013）。
+     */
+    private fun scheduleDetailWindowLoad(dataTimeMillis: Long) {
+        detailWindowJob?.cancel()
+        val myGeneration = ++detailWindowGeneration
+        val period = _selectedPeriod.value
+        detailWindowJob = viewModelScope.launch {
+            delay(DetailWindow.DEBOUNCE_MILLIS)
+            val range = DetailWindow.rangeFor(dataTimeMillis, period.startDate, period.endDate)
+            val detailDays = try {
+                withContext(Dispatchers.IO) {
+                    repository.queryDays(range.startDate.toString(), range.endDate.toString())
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                android.util.Log.w(TAG, "詳細ウィンドウの読み込みに失敗しました: ${e.message}", e)
+                return@launch
+            }
+            // 世代ガード（古いロードの結果が新しい状態を上書きしない）と、待機中に期間自体が
+            // 切り替わっていた場合の防御（resetDetailWindowで既にリセット済みのはずだが念のため）。
+            if (myGeneration != detailWindowGeneration || _selectedPeriod.value != period) return@launch
+            loadedDetailWindow = range
+            val basePoints = _routePoints.value
+            _displayRoutePoints.value = if (detailDays.isEmpty() || basePoints == null) {
+                basePoints
+            } else {
+                DetailWindow.merge(basePoints, mergeDayPoints(detailDays))
+            }
+        }
+    }
+
+    /**
+     * 詳細ウィンドウの状態を破棄する（期間切り替え時、[loadRoute]から呼ぶ）。進行中のロードジョブがあれば
+     * キャンセルし、[_displayRoutePoints]を新しい[basePoints]（概観点列の切り出し、または短期間の全解像度点列）
+     * へ戻す。世代を進めることで、破棄直前に発行されていたロードの結果が後から書き戻されないようにする
+     * （[RouteOverviewCache.invalidate]と同じパターン、D-020決定2）。
+     */
+    private fun resetDetailWindow(basePoints: PointBlobCodec.DecodedPoints?) {
+        detailWindowGeneration++
+        detailWindowJob?.cancel()
+        detailWindowJob = null
+        loadedDetailWindow = null
+        _displayRoutePoints.value = basePoints
     }
 
     /**

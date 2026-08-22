@@ -17,6 +17,28 @@
 - 次に着手すべき場所（ファイル/関数/タスクID）
 ```
 
+## 2026-08-22 T-021 詳細ウィンドウの遅延ロード（S10）
+
+### 実施内容
+D-017の計画（S10）に基づき、長期間（`RouteOverview`経由、`SHORT_PERIOD_MAX_DAYS`超）選択中でも再生位置近傍だけ全解像度の実データを遅延ロードし高精細に描画できるようにした。タスク指示が示した統合方法(b)（「詳細ウィンドウの範囲は全解像度、それ以外は概観点列のまま」という結合済み点列を構築し直す）を採用し、`RouteOverlayView`/`Simplifier`自体には一切手を入れていない。
+
+- **新設 `store/DetailWindow.kt`（DB非依存の純Kotlin）**: `rangeFor`（現在データ時刻の前後1日＝`RADIUS_DAYS=1`をロード対象範囲とし、選択期間の境界でクランプ）、`needsReload`（再生位置が現在ロード済みウィンドウの範囲外へ出たかを判定、範囲内なら再ロードしない＝キャッシュ再利用）、`merge`（概観点列側で詳細ウィンドウの時刻範囲[detailの最小〜最大timestamp]に該当する区間を二分探索で特定し、詳細点列で置き換えた新しい`PointBlobCodec.DecodedPoints`を返す）の3つを実装。ウィンドウ幅は「現在のローカル日付の前後1日」（タスク指示の例をそのまま採用）、デバウンスは`DEBOUNCE_MILLIS=300L`とした。
+- **`TimelineViewModel`への統合**:
+  - `init`で`playbackController.state.map { it.dataTimeMillis }.distinctUntilChanged()`を購読し、`onPlaybackDataTimeChanged`で`isLongPeriodSelected`（`loadRoute`が長期間経路を通ったかのフラグ）が立っている場合のみ`DetailWindow.needsReload`を判定する。短期間選択時はこの購読が早期リターンし機構自体が無効化される（要件どおり）。
+  - 再ロードが必要なら`scheduleDetailWindowLoad`が`detailWindowJob`（進行中ジョブがあればキャンセル、`RouteOverlayView.scheduleSimplify`＝T-013と同じデバウンスパターン）を差し替え、300ms待ってから`repository.queryDays(range.startDate, range.endDate)`をIOディスパッチャで実行し、成功したら`_routePoints`（概観切り出し、そのまま）と`DetailWindow.merge`した結果を新設の`_displayRoutePoints`（`displayRoutePoints: StateFlow`として公開）へ反映する。`RouteOverviewCache`/`PeriodResolutionGate`と同じ世代ガード（`detailWindowGeneration`）で、待機中に期間が切り替わった場合の古い結果の書き戻しを防いでいる。DB例外はcatchしログ警告のみ（クラッシュさせず概観のまま据え置き）。
+  - `loadRoute`が期間切り替えのたびに`resetDetailWindow`（世代を進めジョブをキャンセルし`_displayRoutePoints`を新しい基準点列へ戻す）を呼び、古い詳細ウィンドウの状態を持ち越さない。
+  - `_routePoints`/`routePoints`（動画書き出し・fitBounds用）は変更せず、詳細ウィンドウの反映先を`_displayRoutePoints`という別のStateFlowに分離した。これにより動画書き出し（`exportVideo`）は本タスクの影響を受けない（タスク指示どおりスコープ外のまま、D-017「影響」参照）。
+- **`TimelineScreen.kt`**: `RouteOverlayView.setRoute`を呼ぶ`LaunchedEffect`の入力を`route`（`routePoints`）から新設の`displayRoute`（`displayRoutePoints`）へ切り替えた。`routeBounds`のfitBounds・「動画として保存」ボタンのenabled条件は従来どおり`routePoints`のまま。この置き換えのみで、`RouteOverlayView`側の`Simplifier`は詳細ウィンドウがマージされた点列をそのまま入力として使うようになる（意図どおり、追加の統合ロジック不要）。
+
+### 結果
+- `./gradlew testDebugUnitTest`が成功した。新設`DetailWindowTest.kt`（9件、`rangeFor`のクランプ・`needsReload`の境界値・`merge`の置き換え/全域一致/空配列の各ケース）がすべて成功。
+- `./gradlew assembleDebug`が成功した。
+- `TimelineViewModel`自体はD-020と同じ制約（`ViewModel`基底クラス・`TimelineRepository`のAndroid API依存）でJVM単体テストからインスタンス化できないため、`onPlaybackDataTimeChanged`/`scheduleDetailWindowLoad`/`resetDetailWindow`の統合部分（世代ガードの配線、`_routePoints`との合流）は自動テスト対象外。純粋ロジック（`DetailWindow`のウィンドウ範囲計算・再ロード要否判定・点列結合）は`DetailWindowTest`で検証し、統合部分はコードレビューでの確認に留める。
+- 実機・エミュレータ不在（D-003以来の既知の制約）のため、ズームインした際に実際に軌跡が高精細化して見えることの目視確認は未実施。
+
+### 次回開始位置
+- T-022（カメラ制御スパイク検証、S11）。`MapSnapshotter`の実在・契約確認から着手する。
+
 ## 2026-08-22 T-020 Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b（本ファイル下方のエントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-020の実施内容・結果・次回開始位置は下記エントリに記録済みでコミット`d86cb92`に含まれているが、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）はT-019bの記録同様Managerへ要確認のまま。

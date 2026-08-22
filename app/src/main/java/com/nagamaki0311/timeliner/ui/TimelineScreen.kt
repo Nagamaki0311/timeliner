@@ -42,6 +42,10 @@ import org.maplibre.android.maps.MapLibreMap
 fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
     val period by viewModel.selectedPeriod.collectAsStateWithLifecycle()
     val route by viewModel.routePoints.collectAsStateWithLifecycle()
+    // 地図上への実際の描画（RouteOverlayView）は、長期間選択時は再生位置近傍だけ全解像度に差し替えた
+    // displayRoutePointsを使う（docs/tasks.md T-021）。routeBounds（fitBounds用）・動画書き出し・
+    // 「動画として保存」ボタンのenabled条件はスコープ外のためroutePoints（route）のまま変更しない。
+    val displayRoute by viewModel.displayRoutePoints.collectAsStateWithLifecycle()
     val routeBounds by viewModel.routeBounds.collectAsStateWithLifecycle()
     val isRouteLoading by viewModel.isRouteLoading.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
@@ -147,9 +151,9 @@ fun TimelineScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) 
         )
     }
 
-    LaunchedEffect(route, overlayView) {
+    LaunchedEffect(displayRoute, overlayView) {
         val view = overlayView ?: return@LaunchedEffect
-        val currentRoute = route
+        val currentRoute = displayRoute
         if (currentRoute == null) {
             view.setRoute(DoubleArray(0), DoubleArray(0), LongArray(0))
         } else {
