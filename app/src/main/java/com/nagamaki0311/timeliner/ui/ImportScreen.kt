@@ -5,8 +5,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -38,6 +41,10 @@ fun ImportScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
     Column(
         modifier = modifier
             .fillMaxSize()
+            // ナビゲーションバーと重ならないよう余白を確保する（MainActivity.ktのTabRowと同じ理由、
+            // docs/decisions.md D-012）。本画面はTOPが常に地図/インポートタブの下にあり
+            // ステータスバーとは重ならないため、下側のみで足りる。
+            .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
@@ -57,7 +64,12 @@ fun ImportScreen(viewModel: TimelineViewModel, modifier: Modifier = Modifier) {
             }
             is ImportUiState.InProgress -> {
                 CircularProgressIndicator()
-                Text("インポート中…")
+                if (current.pointCount > 0) {
+                    val label = if (current.writing) "書き込み中" else "読み込み中"
+                    Text("$label… 現在${current.pointCount}件（${current.earliestDate ?: "-"} 〜 ${current.latestDate ?: "-"}）")
+                } else {
+                    Text("インポート中…")
+                }
             }
             is ImportUiState.ConfirmOverwrite -> {
                 Text("確認待ち…")

@@ -110,10 +110,20 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
         )
     }
 
-    /** 指定した日付範囲（両端含む、`YYYY-MM-DD`）に含まれる`days`行を日付昇順で返す。 */
+    /** 指定した日付範囲（両端含む、`YYYY-MM-DD`）に含まれる`days`行を日付昇順で返す（詳細ウィンドウ用途、docs/tasks.md T-014）。 */
     fun queryDays(startDate: String, endDate: String): List<DayRecord> {
-        val db = dbHelper.readableDatabase
         val records = mutableListOf<DayRecord>()
+        queryDaysStreaming(startDate, endDate) { records.add(it) }
+        return records
+    }
+
+    /**
+     * 指定した日付範囲（両端含む、`YYYY-MM-DD`）に含まれる`days`行を日付昇順で読み、1件ずつ[onDay]へ渡す。
+     * [queryDays]と異なりリストへ溜め込まないため、[RouteOverview]構築のように560日規模の全行を
+     * 走査する場合でも、同時に保持する`DayRecord`は常に高々1件で済む（docs/tasks.md T-014）。
+     */
+    fun queryDaysStreaming(startDate: String, endDate: String, onDay: (DayRecord) -> Unit) {
+        val db = dbHelper.readableDatabase
         db.query(
             TimelineDb.TABLE_DAYS,
             arrayOf("date", "start_millis", "end_millis", "point_count", "distance_meters", "points"),
@@ -124,7 +134,7 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
             "date ASC"
         ).use { cursor ->
             while (cursor.moveToNext()) {
-                records.add(
+                onDay(
                     DayRecord(
                         date = cursor.getString(0),
                         startMillis = cursor.getLong(1),
@@ -136,7 +146,15 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
                 )
             }
         }
-        return records
+    }
+
+    /** `days`テーブルに存在する最古日〜最新日を返す。データが1件も無ければ`null`（docs/tasks.md T-014）。 */
+    fun queryDateRange(): Pair<String, String>? {
+        val db = dbHelper.readableDatabase
+        db.rawQuery("SELECT MIN(date), MAX(date) FROM ${TimelineDb.TABLE_DAYS}", null).use { cursor ->
+            if (!cursor.moveToFirst() || cursor.isNull(0) || cursor.isNull(1)) return null
+            return Pair(cursor.getString(0), cursor.getString(1))
+        }
     }
 
     /** 指定した日付範囲（両端含む、`YYYY-MM-DD`）に含まれる`segments`行を開始時刻昇順で返す。 */
@@ -256,11 +274,15 @@ class TimelineRepository(private val dbHelper: TimelineDb) {
             options: CleanOptions,
             existingDatesLookup: (List<String>) -> Set<String>
         ): PreparedImport {
+            // track.segmentsを先に取り出しておく。track（点列本体、130万点規模では約31MB）をこれ以降
+            // 参照しないようにし、クリーニング・日単位分割の実行中に少しでも早く回収対象にできるようにする
+            // （docs/tasks.md T-016）。
+            val segments = track.segments
             val cleaned = TrackCleaner.clean(track, options)
             val dayGroups = groupPointsByLocalDate(cleaned)
             val existing = existingDatesLookup(dayGroups.map { it.date })
             val overwriteDayCount = dayGroups.count { it.date in existing }
-            return PreparedImport(dayGroups, track.segments, cleaned.pointCount, overwriteDayCount)
+            return PreparedImport(dayGroups, segments, cleaned.pointCount, overwriteDayCount)
         }
 
         private fun localDateOf(millis: Long): String =

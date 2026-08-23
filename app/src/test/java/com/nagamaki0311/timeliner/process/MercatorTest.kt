@@ -103,4 +103,29 @@ class MercatorTest {
         val tokyoProjected = Mercator.distanceMeters(35.681236, 139.0, 35.681236, 140.0)
         assertEquals(1.23, tokyoProjected / tokyoHaversine, 0.01)
     }
+
+    @Test
+    fun metersPerPixelAtZoom_zoomZero_matchesWorldCircumferenceOverOneTile() {
+        // ズーム0は世界全体(赤道全周)がタイル1枚(WEB_MERCATOR_TILE_SIZE_PX)に収まる定義のため、
+        // 1ピクセルあたりの距離は「赤道全周 / タイルサイズ」に一致するはず。
+        val expected = (2.0 * Math.PI * 6378137.0) / Mercator.WEB_MERCATOR_TILE_SIZE_PX
+        assertEquals(expected, Mercator.metersPerPixelAtZoom(0.0), 1e-6)
+    }
+
+    @Test
+    fun metersPerPixelAtZoom_eachZoomLevelHalvesTheValue() {
+        // ズームが1上がるとタイルが2倍細かくなり、1ピクセルあたりの距離は半分になる（Webメルカトルの定義）。
+        val zoom5 = Mercator.metersPerPixelAtZoom(5.0)
+        val zoom6 = Mercator.metersPerPixelAtZoom(6.0)
+        assertEquals(zoom5 / 2.0, zoom6, 1e-6)
+    }
+
+    @Test
+    fun metersPerPixelAtZoom_isPositiveAndDecreasingWithZoom() {
+        val low = Mercator.metersPerPixelAtZoom(2.0)
+        val high = Mercator.metersPerPixelAtZoom(15.0)
+        assertTrue(low > 0.0)
+        assertTrue(high > 0.0)
+        assertTrue(high < low)
+    }
 }

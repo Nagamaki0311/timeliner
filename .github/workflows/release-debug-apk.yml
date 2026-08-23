@@ -1,0 +1,47 @@
+name: Release Debug APK
+
+# main への push（マージ後の自動配布）、または workflow_dispatch（任意のブランチからの手動配布）でのみ実行する。
+# 開発ブランチへの通常のpushではトリガーしない（onのbranchesフィルタで既定拒否のため、明示的な除外設定は不要）。
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+# softprops/action-gh-release が GitHub Release を作成・更新するために必要
+# （デフォルトのGITHUB_TOKEN権限では不足するため明示的に付与する）。
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug
+
+      # tag_name を固定のローリングタグにすることで、実行のたびに同じRelease/タグを上書き更新する
+      # （softprops/action-gh-releaseは同一タグの既存Releaseへアセットをそのまま追加更新する）。
+      - name: Publish debug APK to GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: latest-debug
+          name: Debug build (latest)
+          prerelease: true
+          body: |
+            timelinerの最新debug APKです（自動ビルド）。
+
+            - デバッグ署名ビルドです（AGP標準の自動生成debug.keystoreによる署名。Play Store配布用の署名済みリリースではありません）。
+            - 動作確認用の配布であり、このReleaseは同じタグ(`latest-debug`)を実行のたびに上書きします。
+            - ビルド元コミット: ${{ github.sha }}
+          files: app/build/outputs/apk/debug/app-debug.apk

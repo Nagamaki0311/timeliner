@@ -226,9 +226,16 @@ private class PointBuffer(initialCapacity: Int) {
         timestamps = timestamps.copyOf(newCapacity)
     }
 
-    fun trim(): PointSeries = PointSeries(
-        latitudes.copyOf(size),
-        longitudes.copyOf(size),
-        timestamps.copyOf(size)
-    )
+    /**
+     * 確定した点列を[PointSeries]として返す。1点も除去されなかった場合（GPSノイズが少ない実データでは
+     * 珍しくない）は`size == capacity`となり、[grow]によるオーバーサイズも無いため、コピーせず内部配列を
+     * そのまま使い回す（560日規模のインポートで段ごとの不要なフルコピーを避ける、docs/tasks.md T-016）。
+     * このバッファは[trim]呼び出し後に再利用しないこと（呼び出し元は[PointBuffer]をこの1回で使い捨てる設計）。
+     */
+    fun trim(): PointSeries =
+        if (size == latitudes.size) {
+            PointSeries(latitudes, longitudes, timestamps)
+        } else {
+            PointSeries(latitudes.copyOf(size), longitudes.copyOf(size), timestamps.copyOf(size))
+        }
 }

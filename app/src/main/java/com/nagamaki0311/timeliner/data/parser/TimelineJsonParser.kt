@@ -1,12 +1,15 @@
 package com.nagamaki0311.timeliner.data.parser
 
 import android.util.Log
+import com.google.gson.JsonParseException
 import com.google.gson.JsonParser
 import com.google.gson.stream.JsonReader
 import com.google.gson.stream.JsonToken
 import com.nagamaki0311.timeliner.model.RawTrack
 import com.nagamaki0311.timeliner.model.TimelineSegment
 import com.nagamaki0311.timeliner.model.TimelineSegmentType
+import kotlinx.coroutines.CancellationException
+import java.io.IOException
 import java.io.InputStream
 import java.io.InputStreamReader
 import java.io.StringReader
@@ -33,9 +36,23 @@ object TimelineJsonParser {
 
     private const val TAG = "TimelineJsonParser"
 
-    /** 単体の`.json`ファイルをパースする。 */
-    fun parseJson(input: InputStream): RawTrack {
-        val builder = RawTrackBuilder()
+    /**
+     * 単体の`.json`ファイルをパースする。
+     *
+     * [onProgress]は、ストリーミング走査中にこれまで読み取った点数・タイムスタンプ範囲を
+     * 間引いて通知する任意コールバック（560日規模・数百万点のファイルでUIへ進捗表示するため、
+     * docs/tasks.md T-015）。`null`（既定）なら一切呼ばれない。
+     *
+     * [isActive]は、[onProgress]と同じ間引きタイミングで確認する継続可否チェック（呼び出し元の
+     * `CoroutineScope`の生存確認等に使う想定、docs/decisions.md D-021決定1）。`false`を返した場合、
+     * [CancellationException]を送出してパースを打ち切る。既定（`{ true }`）では常に継続する。
+     */
+    fun parseJson(
+        input: InputStream,
+        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null,
+        isActive: () -> Boolean = { true }
+    ): RawTrack {
+        val builder = RawTrackBuilder(onProgress, isActive)
         JsonReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
             parseRoot(reader, builder)
         }
@@ -51,9 +68,20 @@ object TimelineJsonParser {
      * 場合のみ読み込む）。判定にはzip全体のエントリ種別を先に把握する必要があるため、
      * [openInput]（同一内容を指す新しい[InputStream]を返す関数）を2回呼び出して2パスで走査する
      * （`ZipInputStream`は巻き戻せないため。zip内容全体をメモリへ読み込むことは避ける）。
+     *
+     * [onProgress]は[parseJson]と同様の進捗コールバック（docs/tasks.md T-015）。エントリをまたいでも
+     * 同一の[RawTrackBuilder]が状態（点数の累積・間引き済み前回通知時刻）を保持するため自然に連続した
+     * 進捗として通知される。
+     *
+     * [isActive]は[parseJson]と同様の継続可否チェック（docs/decisions.md D-021決定1）。エントリをまたいでも
+     * 同一の[RawTrackBuilder]が保持するため、あるエントリの走査中にキャンセルされれば以降のエントリも走査されない。
      */
-    fun parseZip(openInput: () -> InputStream): RawTrack {
-        val builder = RawTrackBuilder()
+    fun parseZip(
+        onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null,
+        isActive: () -> Boolean = { true },
+        openInput: () -> InputStream
+    ): RawTrack {
+        val builder = RawTrackBuilder(onProgress, isActive)
         val hasSemanticEntry = scanForSemanticLocationHistoryEntry(openInput)
         openInput().use { input ->
             ZipInputStream(input).use { zip ->
@@ -147,6 +175,10 @@ object TimelineJsonParser {
      * 想定外の型不一致・欠損等で[parseElement]が例外を送出しても、元の`reader`はこの要素を
      * 正しく消費し終えた状態のままなので、後続要素の走査に影響しない
      * （`reader`のスキャン位置は壊さず、その要素だけをスキップできる）。
+     *
+     * [CancellationException]（[RawTrackBuilder.maybeReportProgress]が[isActive]=falseで送出しうる）は
+     * `RuntimeException`のサブクラスだが、要素単位のスキップ対象ではなくパース全体の打ち切り指示のため、
+     * 他の想定外例外より先に判定し、握りつぶさずそのまま再送出する（docs/decisions.md D-021決定1）。
      */
     private fun parseArrayElementSafely(reader: JsonReader, parseElement: (JsonReader) -> Unit) {
         val element = JsonParser.parseReader(reader)
@@ -154,6 +186,8 @@ object TimelineJsonParser {
             JsonReader(StringReader(element.toString())).use { elementReader ->
                 parseElement(elementReader)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: RuntimeException) {
             // 想定外の型不一致・欠損等が発生した要素はスキップし、他の要素の処理は継続する（docs/decisions.md D-004決定3）。
             Log.w(TAG, "要素のパースに失敗したためスキップします: ${e.message}", e)
@@ -176,25 +210,65 @@ object TimelineJsonParser {
     private fun parseRootObject(reader: JsonReader, builder: RawTrackBuilder): TimelineFormat {
         reader.beginObject()
         var format: TimelineFormat? = null
-        while (reader.hasNext()) {
-            when (reader.nextName()) {
-                "semanticSegments" -> {
-                    parseDeviceTimelineArray(reader, builder)
-                    format = TimelineFormat.DEVICE_TIMELINE_ANDROID
+        // while条件（hasNext()）自体もtryの内側に含める。あるキーの処理が成功しformatが確定した
+        // 直後の「次のキー名確認」自体が例外を投げるケースも保護対象に含める必要があるため
+        // （docs/decisions.md D-015決定1）。
+        try {
+            while (reader.hasNext()) {
+                when (reader.nextName()) {
+                    "semanticSegments" -> {
+                        // 対応するキーが判明した時点でformatを確定させる（配列パース呼び出しの前）。
+                        // 配列自身の2件目以降の要素で例外が発生しても、1件目までの成果を
+                        // 「format確定済み」として回収できるようにするため（docs/decisions.md D-015決定2）。
+                        format = TimelineFormat.DEVICE_TIMELINE_ANDROID
+                        parseDeviceTimelineArray(reader, builder)
+                    }
+                    "timelineObjects" -> {
+                        format = TimelineFormat.TAKEOUT_SEMANTIC_LOCATION_HISTORY
+                        parseTimelineObjectsArray(reader, builder)
+                    }
+                    "locations" -> {
+                        format = TimelineFormat.TAKEOUT_RECORDS
+                        parseRecordsArray(reader, builder)
+                    }
+                    // rawSignals/userLocationProfile等の兄弟キーはv1スコープ外（docs/decisions.md D-002参照）。
+                    else -> reader.skipValue()
                 }
-                "timelineObjects" -> {
-                    parseTimelineObjectsArray(reader, builder)
-                    format = TimelineFormat.TAKEOUT_SEMANTIC_LOCATION_HISTORY
-                }
-                "locations" -> {
-                    parseRecordsArray(reader, builder)
-                    format = TimelineFormat.TAKEOUT_RECORDS
-                }
-                else -> reader.skipValue()
             }
+        } catch (e: IOException) {
+            return recoverRootObjectOrRethrow(e, format, builder)
+        } catch (e: JsonParseException) {
+            return recoverRootObjectOrRethrow(e, format, builder)
         }
         reader.endObject()
         return format ?: throw IllegalArgumentException("既知のタイムラインJSON形式と一致しませんでした")
+    }
+
+    /**
+     * ルートオブジェクト走査中にストリーム破損由来の例外（`IOException`系/`JsonParseException`系）が
+     * 発生した際、既に主要キーから有効なデータを1件以上読み終えていれば（=`format`確定かつ
+     * `builder`が空でなければ）そのデータを保持したまま復旧する（docs/decisions.md D-015決定3）。
+     * `format`は判明したが1件もデータを読めなかった場合（真の失敗）は救済せず再送出する。
+     *
+     * 注意: 呼び出し時点で`reader`のストリーム位置は壊れており、`hasNext()`/`endObject()`等の
+     * 以降の呼び出しも同じ例外を再送出する（実測確認済み、docs/decisions.md D-014決定4）。
+     * `reader`へは以降一切触れず、収集済みの`builder`データのみを使って即座に返す。
+     */
+    private fun recoverRootObjectOrRethrow(
+        e: Exception,
+        format: TimelineFormat?,
+        builder: RawTrackBuilder
+    ): TimelineFormat {
+        if (format != null && !builder.isEmpty()) {
+            Log.w(
+                TAG,
+                "ルートオブジェクトのフィールド読み込み中にエラーが発生しましたが、" +
+                    "既に${format}形式の有効なデータを取得済みのため、そのままインポートを完了します: ${e.message}",
+                e
+            )
+            return format
+        }
+        throw e
     }
 
     // ---- 形式A/B: 端末内Timeline(Android/iOS) ----
@@ -665,13 +739,37 @@ object TimelineJsonParser {
  *
  * [build]は複数データ源の結合順・zip格納順が時系列と一致しない場合に備え、
  * 全点を時刻昇順に安定ソートしてから[RawTrack]を返す（docs/decisions.md D-004参照）。
+ *
+ * [onProgress]は進捗表示用コールバック（docs/tasks.md T-015）。[addPoint]のたびに毎回呼ぶと
+ * 560万点規模でオーバーヘッドになるため、点数の増分または経過時間のいずれかが一定量に達した
+ * 場合のみ間引いて呼ぶ（[maybeReportProgress]）。ここで通知する最古/最新タイムスタンプは
+ * これまでに追加された点の中の最小/最大値であり、[build]が返す最終ソート結果とは挿入順次第で
+ * 厳密には一致しない場合があるが、ユーザー向けの途中経過表示としては十分（過度な精度は不要）。
+ *
+ * [isActive]は継続可否チェック（docs/decisions.md D-021決定1）。[onProgress]と同じ間引きタイミングで
+ * 確認し、`false`を返した時点で[CancellationException]を送出してパースを打ち切る。呼び出し元の
+ * `CoroutineScope`が破棄された後もIOスレッド上でパースが動き続けることを防ぐ。
  */
-private class RawTrackBuilder {
+private class RawTrackBuilder(
+    private val onProgress: ((pointCount: Int, earliestMillis: Long, latestMillis: Long) -> Unit)? = null,
+    private val isActive: () -> Boolean = { true }
+) {
     private var latitudes = DoubleArray(INITIAL_CAPACITY)
     private var longitudes = DoubleArray(INITIAL_CAPACITY)
     private var timestamps = LongArray(INITIAL_CAPACITY)
     private var size = 0
     private val segments = mutableListOf<TimelineSegment>()
+
+    private var earliestTimestampMillis = Long.MAX_VALUE
+    private var latestTimestampMillis = Long.MIN_VALUE
+    private var lastProgressPointCount = 0
+
+    /**
+     * 前回進捗チェック時刻。未設定（初回[addPoint]がまだ来ていない）は`null`で表す。
+     * 旧実装では初期値`0L`のため最初の[addPoint]で経過時間条件が必ず真になり、
+     * `pointCount=1`という意図しないタイミングで発火していた（docs/decisions.md D-021決定1）。
+     */
+    private var lastProgressTimeMillis: Long? = null
 
     fun addPoint(latitude: Double, longitude: Double, timestampMillis: Long) {
         if (size == latitudes.size) {
@@ -681,11 +779,38 @@ private class RawTrackBuilder {
         longitudes[size] = longitude
         timestamps[size] = timestampMillis
         size++
+        if (timestampMillis < earliestTimestampMillis) earliestTimestampMillis = timestampMillis
+        if (timestampMillis > latestTimestampMillis) latestTimestampMillis = timestampMillis
+        maybeReportProgress()
+    }
+
+    private fun maybeReportProgress() {
+        val now = System.currentTimeMillis()
+        val lastTime = lastProgressTimeMillis
+        if (lastTime == null) {
+            // 初回はまだ基準時刻が無いため、ここで基準を確立するだけに留め、通知・isActiveチェックのどちらも行わない。
+            lastProgressTimeMillis = now
+            lastProgressPointCount = size
+            return
+        }
+        val pointsSinceLastReport = size - lastProgressPointCount
+        if (pointsSinceLastReport < PROGRESS_POINT_INTERVAL && now - lastTime < PROGRESS_TIME_INTERVAL_MILLIS) {
+            return
+        }
+        lastProgressPointCount = size
+        lastProgressTimeMillis = now
+        if (!isActive()) {
+            throw CancellationException("パース処理の呼び出し元が破棄されたため中断しました")
+        }
+        onProgress?.invoke(size, earliestTimestampMillis, latestTimestampMillis)
     }
 
     fun addSegment(segment: TimelineSegment) {
         segments.add(segment)
     }
+
+    /** 点0件かつセグメント0件（=まだ何も有効なデータを取得していない）かどうかを返す。 */
+    fun isEmpty(): Boolean = size == 0 && segments.isEmpty()
 
     private fun grow() {
         val newCapacity = latitudes.size * 2
@@ -695,6 +820,18 @@ private class RawTrackBuilder {
     }
 
     fun build(): RawTrack {
+        if (isAlreadySortedAscending()) {
+            // 既に時刻昇順（単一ファイル・単一zipエントリの典型的な入力）なら、ボクシングを伴う
+            // sortedBy（1.3M点規模ではInteger boxingだけで数十MBの一時ゴミを生む）とインデックス経由の
+            // 並べ替えコピーを省略し、末尾の余剰容量（grow()由来）を切り詰めるコピーのみ行う
+            // （TrackCleaner.normalizeのsortedIndicesと同じ判定パターン、docs/tasks.md T-016）。
+            return RawTrack(
+                latitudes = latitudes.copyOf(size),
+                longitudes = longitudes.copyOf(size),
+                timestampsMillis = timestamps.copyOf(size),
+                segments = segments.toList()
+            )
+        }
         // 安定ソート（KotlinのsortedByはマージソート相当で安定）。同時刻点は元の追加順を保つ。
         val order = (0 until size).sortedBy { timestamps[it] }
         val sortedLatitudes = DoubleArray(size)
@@ -713,7 +850,20 @@ private class RawTrackBuilder {
         )
     }
 
+    private fun isAlreadySortedAscending(): Boolean {
+        for (i in 1 until size) {
+            if (timestamps[i] < timestamps[i - 1]) return false
+        }
+        return true
+    }
+
     companion object {
         private const val INITIAL_CAPACITY = 64
+
+        /** [maybeReportProgress]の間引き閾値: 点数がこの数だけ増えるごとに通知する（docs/tasks.md T-015）。 */
+        private const val PROGRESS_POINT_INTERVAL = 3000
+
+        /** [maybeReportProgress]の間引き閾値: 前回通知からこの時間（ミリ秒）経過したら通知する。 */
+        private const val PROGRESS_TIME_INTERVAL_MILLIS = 150L
     }
 }
