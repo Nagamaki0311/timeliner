@@ -883,3 +883,31 @@
 - 以降、外部SDK（MapLibre Native等）の内部規約に基づく定数（タイルサイズ、座標系の原点等）を導入する場合、レビューでも一次ソース（GitHub該当タグ・バイトコード逆コンパイル等、D-028が確立した手法）との突き合わせを明示的な確認観点に含めることが望ましい（ロジックの正しさの検証だけでは見つからない）。
 - `Mercator.WEB_MERCATOR_TILE_SIZE_PX`が、投影・ズーム計算に関わる今後のコード（`CameraDirector`・`RouteBitmapOverlay`等）が参照すべき単一の真実の情報源となる。
 
+---
+
+## D-033: GitHub ActionsによるAPK配布（T-027）の方式選定
+
+- 日付: 2026-08-23
+- 状態: 採用
+
+### 背景
+- ユーザーから「GitHub上での配布を設定」との要望があり（T-027）、リポジトリにCI/CDワークフローが1つも存在しない状態から新設することになった。ユーザー指示自体が配布方式（GitHub Release＋固定ローリングタグ、debug署名のまま、新規署名鍵不要）・トリガー（`main`へのpush・`workflow_dispatch`、開発ブランチへの通常pushは除外）まで具体的に指定していたため、Developerの裁量判断は主に使用するaction・バージョンの選定と実装の細部に限られた。
+
+### 決定
+1. `actions/checkout@v7`・`actions/setup-java@v5`（`distribution: temurin`、`java-version: "17"`、`cache: gradle`）・`softprops/action-gh-release@v3`を採用する。いずれも`git ls-remote --tags`で実在するタグを確認した。`setup-java`は本家READMEが本番用途にはV5を推奨すると明記しているためV5を選んだ。`action-gh-release`は本家READMEがV3へのアップグレードを推奨すると明記しているためV3を選んだ。
+2. Release作成には`softprops/action-gh-release@v3`の`tag_name: latest-debug`（固定ローリングタグ）を使う。本家README「If a tag already has a GitHub release, the existing release will be updated with the release assets.」の記述により、同一タグへの実行のたびの上書きが標準動作であることを確認済み（`overwrite_files`は既定`true`）。
+3. `permissions: contents: write`をワークフローレベルで付与する（本家README「Permissions」節の要求どおり）。
+4. `prerelease: true`を設定する。動作確認用のローリングビルドであることをGitHub UI上でも区別するため。
+5. `on.push.branches: [main]`のみを指定する（許可リスト方式）。GitHub Actionsの`push`トリガーは指定ブランチ以外では発火しないため、開発ブランチ（`claude/timeline-visualization-app-d2z7zr`）を明示的に除外する記述は不要と判断した。
+6. ワークフロー構文の検証は、本環境にactionlintが未導入だったため`go install github.com/rhysd/actionlint/cmd/actionlint@latest`で導入した上で実行し、エラー0件を確認した（実際のGitHub Actions実行自体は本環境では不可、AGENTS.md原則8）。
+
+### 理由
+- 1・2・3はいずれもユーザー要求（新規署名鍵不要、ローリングタグでの上書き、`contents: write`権限）を満たすための実装詳細であり、「実績のあるaction」という要求に対し具体的なバージョンをGitHub一次ソース（タグ一覧・README）で確認してから選定した。
+- 4はユーザー要求で明示されていない追加判断だが、正式リリースと動作確認用ビルドをUI上で混同しないための小さな安全策であり、ユーザー要求（「署名済みリリースビルドは不要」「動作確認のためにインストールできれば十分」）の意図に沿う。
+- 5は判定ラダー「1行で書けるか」に相当する単純な整理で、除外用の追加設定（`paths-ignore`やジョブ内`if`条件等）はYAGNIに反するため採用しなかった。
+- 6は「無理にActions実行結果を装った記述をしない」というユーザー指示に従いつつ、可能な範囲での構文検証手段を確保した。
+
+### 影響
+- 今後`.github/workflows/`に別のワークフローを追加する場合も、actionのバージョンは`git ls-remote --tags`と本家READMEの「推奨バージョン」記載で確認する手順を踏襲する。
+- `latest-debug`タグのReleaseは常に1つのみで、複数バージョンの履歴を残す設計ではない。バージョン管理された複数リリースが必要になった場合は、別途タグ戦略（`vX.Y.Z`等）を再設計する必要がある。
+

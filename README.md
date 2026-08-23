@@ -59,6 +59,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 `adb`が使えない環境では、生成された`app-debug.apk`を端末へ手動転送（ファイル共有・メール添付等）し、端末側のファイルマネージャから開いてインストールしてもよい（「提供元不明のアプリ」のインストールを許可する必要がある場合がある）。
 
+### GitHubからのAPKダウンロード
+
+ローカルでビルドせずに試したい場合は、[Releases](https://github.com/Nagamaki0311/timeliner/releases)ページから最新のAPK（`app-debug.apk`）を直接ダウンロードできる。`main`ブランチへのマージ時、および`.github/workflows/release-debug-apk.yml`の手動実行（`workflow_dispatch`）のたびに、固定タグ`latest-debug`のReleaseへ最新のAPKが自動で上書き公開される（過去バージョンの個別保持はしない）。
+
+このAPKは上記「デバッグビルド」節と同じ**デバッグ署名**（AGP標準の自動生成debug.keystore）でビルドされており、Play Store配布用の署名済みリリースではない。個人が動作確認のためにインストールする用途を想定している。
+
 ## 対応しているタイムラインJSON形式
 
 以下4形式のエクスポートファイル（`.json`単体、またはそれらを含む`.zip`）をインポートできる。形式は内容から自動判別するため、ユーザーが指定する必要はない。

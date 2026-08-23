@@ -2,6 +2,25 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-23 T-027 GitHub ActionsによるAPK配布の設定
+
+### 実施内容
+- D-033の決定に従い、`.github/workflows/release-debug-apk.yml`を新規作成した（`.github/workflows/`ディレクトリ自体が存在しなかったため新設）。トリガーは`push`（`branches: [main]`）と`workflow_dispatch`のみで、開発ブランチ（`claude/timeline-visualization-app-d2z7zr`）への通常pushでは発火しない（`on.push.branches`の許可リスト方式のため除外の明示記述は不要）。
+- ジョブは`permissions: contents: write`を明示し、`actions/checkout@v7`→`actions/setup-java@v5`（`distribution: temurin`、`java-version: "17"`、`cache: gradle`。`app/build.gradle.kts`の`sourceCompatibility`/`targetCompatibility`がJava 17であることを確認して合わせた）→`./gradlew assembleDebug`→`softprops/action-gh-release@v3`（`tag_name: latest-debug`固定、`prerelease: true`、`files: app/build/outputs/apk/debug/app-debug.apk`）の順で実行する。新規署名鍵・GitHub Secretsは追加せず、AGP標準のdebug署名のまま配布する（要件どおり）。
+- 各actionのバージョンは`git ls-remote --tags`で実在するタグを確認した上で、`actions/checkout`README・`actions/setup-java`README（「V6はmainブランチで開発中、本番はV5推奨」の明記）・`softprops/action-gh-release`README（「V2.6.2が最後のV2、V3へアップグレード推奨」の明記、および「同一タグへの既存Releaseはアセットごと上書き更新される」「`contents: write`権限が必要」の記述）を`raw.githubusercontent.com`から直接取得して確認し、それぞれ`@v7`/`@v5`/`@v3`を選定した。詳細な選定理由はD-033参照。
+- 構文検証: 本環境にactionlintが未導入だったため`go install github.com/rhysd/actionlint/cmd/actionlint@latest`（v1.7.12、go1.26.7で自動ビルド）で導入し、`actionlint .github/workflows/release-debug-apk.yml`を実行してエラー0件を確認した。あわせて`python3 -c "import yaml; yaml.safe_load(...)"`でYAMLとしての構文妥当性も確認した。実際のGitHub Actions実行自体は本環境では不可のため未実施（AGENTS.md原則8、無理に実行結果を装う記述はしない）。
+- README.mdの「実機へのインストール」節の直後に「GitHubからのAPKダウンロード」小節を追加し、Releasesページ（`https://github.com/Nagamaki0311/timeliner/releases`）から最新の`app-debug.apk`を直接ダウンロードできる旨、固定タグ`latest-debug`が実行のたびに上書きされる旨、既存の「デバッグビルド」節と同じデバッグ署名でありPlay Store配布用ではない旨を追記した。既存記述と重複しないよう、署名方式の説明は「デバッグビルド」節を参照する形にした。
+- Androidアプリのコード（Kotlin/Compose側）には変更を加えていない。
+
+### 結果
+- `./gradlew assembleDebug`が成功することを確認した（今回の変更はビルド設定自体に影響しないため、既存のUP-TO-DATEタスクのみで完了）。
+- `actionlint`によるワークフローYAMLの構文チェックが0件のエラー・警告で通過した。
+- `git status`で変更対象が`.github/workflows/release-debug-apk.yml`（新規）・`README.md`（追記）・`docs/tasks.md`・`docs/decisions.md`（D-033追加）・本エントリのみであり、Androidアプリのソースコードに変更がないことを確認した。
+
+### 次回開始位置
+- T-027は完了。次のタスクは未定（docs/tasks.mdのタスク一覧・バックログを参照してManagerが判断）。
+- 懸念点（将来的な見直し候補）: 本ワークフローは実際にGitHub Actions上で実行されたことがない（本環境ではActions自体を実行する手段がないため）。Manager側でpush後、初回の`workflow_dispatch`手動実行で実際に動作すること（`softprops/action-gh-release`の権限エラーの有無、`latest-debug`タグでのRelease作成・APK添付）を確認することが望ましい。
+
 ## 2026-08-23 T-026 Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-014b・T-015・T-019b・T-020・T-021・T-021b・T-022・T-023・T-023b・T-023c・T-024・T-024b・T-025（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-026の実施内容・結果・次回開始位置は下記エントリ「## 2026-08-23 T-026 全体再計測とドキュメント更新（S15、D-017計画の最終ステップ）」に記録済みでコミット`515330c`に含まれている（`git show --stat 515330c`で`docs/progress.md`が変更ファイルに含まれることを確認済み）が、同hookが`git status --porcelain -- docs/progress.md`（未コミット差分の有無）のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）は過去タスクの記録同様Managerへ要確認のまま。
