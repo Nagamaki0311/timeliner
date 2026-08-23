@@ -2,6 +2,7 @@ package com.nagamaki0311.timeliner.camera
 
 import com.nagamaki0311.timeliner.playback.PlaybackTimeline
 import com.nagamaki0311.timeliner.process.GeoBounds
+import com.nagamaki0311.timeliner.process.Mercator
 import kotlin.math.ln
 import kotlin.math.min
 import kotlin.math.sin
@@ -251,17 +252,65 @@ object CameraDirector {
         }
         return lo
     }
+
+    /**
+     * 動画書き出し（docs/tasks.md T-025）で、隣接キーフレームの静止画背景をクロスフェードする割合を表す。
+     * [fromIndex]の背景を`(1 - toAlpha)`、[toIndex]の背景を[toAlpha]の不透明度で重ねて描画すると、
+     * [fromIndex]と[toIndex]の間を滑らかに繋げられる（[fromIndex]==[toIndex]の場合はクロスフェード不要、
+     * [toAlpha]は常に0）。
+     */
+    data class KeyframeBlend(val fromIndex: Int, val toIndex: Int, val toAlpha: Float)
+
+    /**
+     * 再生時刻[playbackMillis]における、[keyframes]（`playbackMillis`昇順、[computeKeyframes]の戻り値）の
+     * クロスフェード状態を返す（docs/tasks.md T-025、docs/decisions.md D-017決定4「控えめな演出、ショット切替は
+     * クロスフェードのみ」）。隣接する2つのキーフレームの間（`keyframes[i].playbackMillis`〜
+     * `keyframes[i+1].playbackMillis`）を通して線形にクロスフェードする、最も単純な設計を採用した
+     * （区間の一部だけクロスフェードし残りを静止させる設計より実装・検証コストが低く、D-017決定4の
+     * 「控えめ」の範囲内で十分な演出になる）。[keyframes]が1個以下、または[playbackMillis]が
+     * 最初/最後のキーフレームの`playbackMillis`以下/以上の場合はクロスフェードなし
+     * （[KeyframeBlend.fromIndex] == [KeyframeBlend.toIndex]、`toAlpha`=0）を返す。
+     *
+     * ルート線の投影座標系（[com.nagamaki0311.timeliner.export.RouteBitmapOverlay]が使う）は、この関数の
+     * 結果とは独立に[currentKeyframeIndex]（窓の所有権と一致する、境界での切り替え）で決める。背景の
+     * クロスフェードとルート投影の切り替えタイミングをあえて一致させない設計はD-017決定4の指示通り
+     * （「ルート線の投影自体を滑らかに補間する必要は無い」）。
+     */
+    fun resolveKeyframeBlend(keyframes: List<CameraKeyframe>, playbackMillis: Long): KeyframeBlend {
+        require(keyframes.isNotEmpty()) { "keyframesは1個以上である必要があります" }
+        if (keyframes.size == 1) return KeyframeBlend(0, 0, 0f)
+        if (playbackMillis <= keyframes.first().playbackMillis) return KeyframeBlend(0, 0, 0f)
+        val lastIndex = keyframes.size - 1
+        if (playbackMillis >= keyframes.last().playbackMillis) return KeyframeBlend(lastIndex, lastIndex, 0f)
+
+        // keyframes[lo].playbackMillis <= playbackMillis < keyframes[lo + 1].playbackMillisとなるloを二分探索。
+        var lo = 0
+        var hi = lastIndex
+        while (lo + 1 < hi) {
+            val mid = (lo + hi) / 2
+            if (keyframes[mid].playbackMillis <= playbackMillis) lo = mid else hi = mid
+        }
+        val fromTime = keyframes[lo].playbackMillis
+        val toTime = keyframes[lo + 1].playbackMillis
+        val span = toTime - fromTime
+        // computeKeyframesはplaybackMillis狭義単調増加を保証するため、ここでspan<=0にはならないはず
+        // （壊れたら失敗する最小限の確認、AGENTS.md原則6）。0除算を避ける防御も兼ねる。
+        check(span > 0L) { "隣接キーフレームのplaybackMillisが単調増加していません: $fromTime, $toTime" }
+        val alpha = (playbackMillis - fromTime).toFloat() / span.toFloat()
+        return KeyframeBlend(lo, lo + 1, alpha.coerceIn(0f, 1f))
+    }
 }
 
 /**
  * 緯度経度のbboxが指定したビューポート（px）に収まる最小ズームレベルを、標準的なWebメルカトルの
- * 「1タイル256px、ズームレベルZで1タイルが360/2^Z度をカバーする」という関係式から計算する
- * （Google Maps/Mapbox系ライブラリで広く使われる`getBoundsZoomLevel`と同じ考え方）。
- * 純Kotlinのみに依存し、既存の地図SDK（MapLibre）のAPIは使わない。
+ * 「1タイル[Mercator.WEB_MERCATOR_TILE_SIZE_PX]px、ズームレベルZで1タイルが360/2^Z度をカバーする」
+ * という関係式から計算する（Google Maps/Mapbox系ライブラリで広く使われる`getBoundsZoomLevel`と同じ考え方）。
+ * 純Kotlinのみに依存し、既存の地図SDK（MapLibre）のAPIは使わない（タイルサイズの値自体は
+ * [Mercator.WEB_MERCATOR_TILE_SIZE_PX]のKDoc参照、MapLibre Native一次ソースで確認済み）。
  */
 internal object CameraZoom {
 
-    private const val TILE_SIZE_PX = 256.0
+    private val TILE_SIZE_PX = Mercator.WEB_MERCATOR_TILE_SIZE_PX
 
     /**
      * 返す最大ズームレベル。bboxが1点に潰れている（同一地点への滞在）等の退化ケースの上限値として使う。

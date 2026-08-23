@@ -2,6 +2,36 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-23 T-025 動画書き出しのカメラ制御（S14、地図を下地からBitmapOverlay内部へ移す）
+
+### 実施内容
+- D-017/D-028の決定に従い、`VideoExporter`の設計を「`map.snapshot()`を1回だけ呼び1枚の静止画を下地`MediaItem`として渡す」方式から、「`CameraDirector.computeKeyframes`が計算するキーフレーム列それぞれについて`MapSnapshotter`でヘッドレスにスナップショットを取得し、`RouteBitmapOverlay`が毎フレーム地図背景（クロスフェード込み）とルート線等を合成する」方式へ全面的に変更した（対象: `app/src/main/java/com/nagamaki0311/timeliner/export/VideoExporter.kt`・`RouteBitmapOverlay.kt`）。
+- **`VideoExporter.export`**: `map`パラメータは出力解像度のアスペクト比を決めるため（`map.width`/`map.height`、D-002決定6）にのみ使い、スタイル・カメラ位置は参照しない（D-017決定5どおりシグネチャ・呼び出し元は無変更）。`CameraDirector.computeKeyframes(..., viewportWidthPx=outputWidthPx, viewportHeightPx=outputHeightPx)`でキーフレーム列を計算した後、新設`captureKeyframeSnapshots`が1つの`MapSnapshotter`インスタンスを使い回し、前回`start()`完了を待ってから`setCameraPosition`→`start()`という逐次ループでキーフレームごとに1枚ずつBitmapを取得する（D-028決定5の設計どおり、同時並行はしない）。`MapSnapshotter.Options(outputWidthPx, outputHeightPx)`を直接指定するため、`pixelRatio`既定値(1.0f)のもとで取得したBitmapがそのまま出力解像度になり、旧実装が行っていた`Bitmap.createScaledBitmap`による縮小が不要になった。`RouteFrameRenderer`が地図帰属表示を自前で焼き込むため、`MapSnapshotter`自身のロゴ・帰属表示描画は`withLogo(false)`/`withAttribution(false)`で無効化した。各`start()`呼び出しには既存`SNAPSHOT_TIMEOUT_MILLIS`（10秒）と同じタイムアウトを適用し、失敗・タイムアウト・キャンセルいずれの場合も取得済みBitmapを`recycle()`してから伝播する。
+- **ルート線の座標系（カメラが動く前提への再設計）**: ルート点列は1回だけ簡略化・投影空間（Webメルカトル、メートル）へ変換する（新設`buildRouteWorldGeometry`、コンパニオンオブジェクトの関数としJVM単体テスト可能）。epsilon（簡略化の許容誤差）は、キーフレーム群の中で最もズームが高い（＝1ピクセルあたりの実距離が最も小さい＝最も細かい表現が必要な）ものを基準に決めることで、どのキーフレームでも視覚的破綻が起きない側に倒した（低ズームのキーフレームでは必要以上に点が残るが`Simplifier.simplify`の`maxPointCount`で上限があるため実害なし）。カメラごとに別々の簡略化点集合を持たない設計にしたことで、`RouteFrameRenderer.progressAtDataTime`の`progress`（0〜1）がキーフレーム区間をまたいでも同じ点集合基準の一貫した値になる。
+- **`RouteBitmapOverlay`**: 地図背景も本クラスが毎フレーム合成する設計へ変更した。`CameraDirector.currentKeyframeIndex`（既存、T-024と同じ関数）で「現在のキーフレーム」を特定し、そのカメラ位置（中心・ズーム）を基準に`ScreenProjection.toScreenCoordinates`でルート点列を毎フレーム再投影する（キーフレーム切り替え時に座標系も切り替える単純設計、投影自体の滑らかな補間は行わない、D-017決定4の範囲内）。同じキーフレームが続く間（キーフレーム間隔は再生時刻で数秒あり、多くの連続フレームが該当）は再投影をスキップするキャッシュを追加した。
+- **クロスフェード方式**: 新設`CameraDirector.resolveKeyframeBlend(keyframes, playbackMillis): KeyframeBlend(fromIndex, toIndex, toAlpha)`を追加した（純Kotlin、`CameraDirector.kt`に追加、`currentKeyframeIndex`と同じファイル）。隣接キーフレームの`playbackMillis`区間全体を通して線形にクロスフェードする、タスク指示が例示した最も単純な方式を採用した（区間の一部だけクロスフェードし残りを静止させる方式より実装・検証コストが低く、D-017決定4「控えめな演出」の範囲内で十分）。`RouteBitmapOverlay.drawBackground`が`fromIndex`のBitmapをalpha=255、`toIndex`のBitmapをalpha=`toAlpha*255`で重ね描き（`Paint.alpha`＋`canvas.drawBitmap`2回、Paintは使い回し）する。背景のクロスフェードとルート投影の切り替えタイミング（`resolveKeyframeBlend`は区間全体、`currentKeyframeIndex`は窓の中点で切替）はあえて一致させていない（D-017決定4「投影自体を滑らかに補間する必要は無い」の指示どおり）。
+- MediaItemに渡す下地画像は、キーフレーム1枚目のスナップショットを流用する（内容自体は`RouteBitmapOverlay`に完全に覆われるため重要ではない、D-009のImageAssetLoaderパイプライン制約への対応は変更なし）。
+- **進捗表示の追加考慮**: 旧実装は1回のsnapshotで一瞬だったため進捗はTransformerのエンコード段階のみで表現できていたが、T-025ではキーフレーム数分の逐次snapshot取得（各最大10秒のタイムアウト）が無視できない時間を占めうるため、進捗（0.0〜1.0）のうち前半`SNAPSHOT_PHASE_PROGRESS_WEIGHT`（0.5、暫定の保守的な仮定）をスナップショット取得フェーズに、残りをTransformerのエンコードフェーズに割り当てるよう変更した（0%のまま長時間停止して見えるUXの後退を避ける）。
+
+### 重要な発見（実装中に判明した既存バグの修正、T-025スコープを超えるが直接の前提条件のため合わせて修正）
+- ルート線の画面座標変換には「ズームレベル→1ピクセルあたりの投影距離（メートル）」の変換式が新規に必要になった（新設`Mercator.metersPerPixelAtZoom`）。この式が使うWebメルカトルの「1タイルあたりのピクセル数」定数を、GitHub一次ソース（`maplibre/maplibre-native`の`android-v13.5.0`タグ、`include/mbgl/util/constants.hpp`の`tileSize_D`、および`include/mbgl/util/projection.hpp`の`Projection::getMetersPerPixelAtLatitude(lat, zoom)`の実装）で直接確認したところ、**512px**だった。
+- 一方、T-023で実装済みの`CameraDirector.CameraZoom`（bbox-fitのズーム計算、D-029/D-030で2回レビュー済み）は`TILE_SIZE_PX = 256.0`（クラシックなOSMタイル規約）を使っていた。これは実際のMapLibre Nativeの規約（512px、`MapLibreMap.cameraPosition.zoom`が実際に使う基準）と1ズームレベル分ずれており、`CameraDirector`が計算するズームが実際より1レベル高く（狭く）なる、すなわち意図したbboxが画面から一部はみ出す潜在バグだった。D-029・D-030のレビューはいずれも純Kotlinのシミュレーション・実行での境界値検証のみを行っており、実際のMapLibre Native定数との突き合わせは行われていなかったため見落とされていた。
+- T-025はこの定数を新規に必要とする箇所（画面座標変換）を持つため、地図ラスター（`MapSnapshotter`が実際にその規約でレンダリングする）とルート線オーバーレイの投影がズレないよう、正しい512px基準の値を使う必要があった。そのため`Mercator.kt`に`WEB_MERCATOR_TILE_SIZE_PX = 512.0`を新設し、`CameraDirector.CameraZoom`の`TILE_SIZE_PX`もこの共有定数を参照するよう修正した（単一の真実の情報源に統一、AGENTS.md原則7「バグは根本原因を直す」）。これによりT-023からの潜在バグ（画面再生でのカメラ追従、T-024にも影響）も合わせて解消される。
+- `CameraZoomTest.kt`の絶対値アサーション2件（viewport=256pxを「1タイル」として使っていたテスト）をviewport=512pxへ更新した。`CameraDirectorTest.kt`の他のテスト（相対比較・`MAX_ZOOM`基準のもの）はこの変更の影響を受けず無修正で成功することを確認した。
+- **Managerへの確認事項**: この修正はT-025のタスク範囲を超えてT-023/T-024（既にレビュー済み・完了扱い）の挙動にも影響する（画面再生時のカメラ自動追従が、修正前より1ズームレベル分広い範囲を映すようになる、意図した通りの修正）。設計判断としてdocs/decisions.mdへD-032のような形で記録するかはManagerの判断に委ねる。
+
+### 結果
+- 新規JVM単体テスト: `MercatorTest`に`metersPerPixelAtZoom`関連3件、`CameraDirectorTest`に`resolveKeyframeBlend`関連8件、`VideoExporterTest`に`buildRouteWorldGeometry`関連3件を追加。`VideoExporter.export`本体・`RouteBitmapOverlay`自体は既存の制約（D-003と同様、`android.*`/Media3/MapLibre実機依存API）によりJVM単体テスト対象外のまま。
+- `./gradlew testDebugUnitTest`成功（camera/process/exportパッケージを含む全パッケージでfailures=0, errors=0、CameraZoomTestのタイルサイズ変更後も含め回帰なし）。
+- `./gradlew assembleDebug`成功、コンパイル警告なし。
+- **メモリ使用量の見積もり**: `keyframeBitmaps`（`List<Bitmap>`、ARGB_8888、出力解像度と同じサイズ）を書き出し完了までメモリに保持する設計（タスク指示どおり）。既定の目標再生時間60秒・既定キーフレーム間隔5秒では約13キーフレーム、出力解像度が短辺1080px上限（近似的に1080×1080と仮定）の場合1枚あたり約4.45MB、合計約58MB。最長の目標再生時間300秒では約61キーフレーム・合計約271MBとなり、より大きい（低スペック端末では無視できない水準だが、一時的なBitmap配列でありスコープを抜けたら即`recycle()`する設計のため、致命的ではないと判断した。実機実測は本開発環境では不可能な既知の制約、D-017「影響」参照）。
+- 実機・エミュレータが本環境に無いため、実際の動画出力の目視確認はできない（既知の制約）。`MapSnapshotter`のAPI契約（D-028、逐次再利用可能・同時並行不可・タイムアウト必須）に沿った実装であることをコード上で確認し、Media3の`BitmapOverlay`/`ImageAssetLoader`パイプライン（D-009で確認済み、静止画1枚でもフレーム数分`getBitmap`が呼ばれる設計）は変更していないため、既存の検証結果がそのまま引き継がれる。
+
+### 次回開始位置
+- T-026（全体再計測とドキュメント更新、S15、最終ステップ）に着手する。
+- 懸念点（将来的な見直し候補）: `SNAPSHOT_PHASE_PROGRESS_WEIGHT=0.5`はキーフレーム取得フェーズとTransformerエンコードフェーズの実際の所要時間比を計測せずに置いた保守的な仮定。実機入手後に実測し調整するとよい。
+- 懸念点: 上記「重要な発見」のCameraZoomタイルサイズ修正（256→512）は、T-025の前提条件として必須のため今回のコミットに含めたが、影響範囲がT-023/T-024にも及ぶため、Managerが別途decisions.mdへの記録要否を判断すること。
+
 ## 2026-08-22 T-024b Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020・T-021・T-021b・T-022・T-023・T-023b・T-023c・T-024（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-024bの実施内容・結果・次回開始位置は下記エントリ「## 2026-08-22 T-024b T-024レビュー指摘の修正（currentKeyframeIndexのタイブレークがcomputeKeyframesの窓分割と等価にならない、D-031）」に記録済みでコミット`bd51166`に含まれている（`git show --stat bd51166`で`docs/progress.md`が変更ファイルに含まれることを確認済み）が、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）は過去タスクの記録同様Managerへ要確認のまま。

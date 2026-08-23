@@ -502,6 +502,132 @@ class CameraDirectorTest {
         }
     }
 
+    // ---- resolveKeyframeBlend（T-025、動画書き出しでの背景クロスフェード） ----
+
+    @Test
+    fun resolveKeyframeBlend_singleKeyframe_neverBlends() {
+        val keyframes = listOf(CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0))
+
+        val blend = CameraDirector.resolveKeyframeBlend(keyframes, 12_345L)
+
+        assertEquals(0, blend.fromIndex)
+        assertEquals(0, blend.toIndex)
+        assertEquals(0f, blend.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_atOrBeforeFirstKeyframe_staysFullyOnFirst() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(1_000L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(2_000L, 35.1, 139.1, 10.0)
+        )
+
+        val blend = CameraDirector.resolveKeyframeBlend(keyframes, 1_000L)
+
+        assertEquals(0, blend.fromIndex)
+        assertEquals(0, blend.toIndex)
+        assertEquals(0f, blend.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_atOrAfterLastKeyframe_staysFullyOnLast() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
+        )
+
+        val blend = CameraDirector.resolveKeyframeBlend(keyframes, 5_000L)
+
+        assertEquals(1, blend.fromIndex)
+        assertEquals(1, blend.toIndex)
+        assertEquals(0f, blend.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_atMidpoint_isHalfBlended() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
+        )
+
+        val blend = CameraDirector.resolveKeyframeBlend(keyframes, 500L)
+
+        assertEquals(0, blend.fromIndex)
+        assertEquals(1, blend.toIndex)
+        assertEquals(0.5f, blend.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_linearlyInterpolatesAcrossMultipleKeyframes() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0),
+            CameraDirector.CameraKeyframe(3_000L, 35.2, 139.2, 10.0)
+        )
+
+        val early = CameraDirector.resolveKeyframeBlend(keyframes, 250L)
+        assertEquals(0, early.fromIndex)
+        assertEquals(1, early.toIndex)
+        assertEquals(0.25f, early.toAlpha, 1e-6f)
+
+        val late = CameraDirector.resolveKeyframeBlend(keyframes, 2_500L)
+        assertEquals(1, late.fromIndex)
+        assertEquals(2, late.toIndex)
+        assertEquals(0.75f, late.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_exactlyAtInteriorKeyframe_isFullyOnThatKeyframe() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0),
+            CameraDirector.CameraKeyframe(2_000L, 35.2, 139.2, 10.0)
+        )
+
+        // ちょうどindex1のplaybackMillisでは、二分探索が区間[1,2]のfromIndex側(=1)を選び、
+        // toAlpha=0(区間の始端)になる。fromIndex=1が100%不透明で描画されるため、
+        // 結果的にindex1のキーフレームが完全に表示される（境界での「どちらか一方が完全に表示される」
+        // という不変条件は、先頭/末尾キーフレーム（早期returnの分岐）と共通する）。
+        val blend = CameraDirector.resolveKeyframeBlend(keyframes, 1_000L)
+        assertEquals(1, blend.fromIndex)
+        assertEquals(0f, blend.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_alphaIsMonotonicallyIncreasingWithinASegment() {
+        val keyframes = listOf(
+            CameraDirector.CameraKeyframe(0L, 35.0, 139.0, 10.0),
+            CameraDirector.CameraKeyframe(1_000L, 35.1, 139.1, 10.0)
+        )
+
+        // t=0はfromIndex==toIndex==0（先頭キーフレーム自身、早期returnの分岐）となりtoAlpha=0、
+        // t=1_000（最後のキーフレームちょうど）も同様にfromIndex==toIndex==1でtoAlpha=0という退化ケースに
+        // なるため、区間[100,900]（fromIndex=0,toIndex=1が維持される範囲）ではインデックスも検証し、
+        // 区間全体ではtoAlphaの値そのものが単調非減少であることのみを検証する。
+        var previousAlpha = -1f
+        for (t in 0L until 1_000L step 100L) {
+            val blend = CameraDirector.resolveKeyframeBlend(keyframes, t)
+            if (t > 0L) {
+                assertEquals(0, blend.fromIndex)
+                assertEquals(1, blend.toIndex)
+            }
+            assertTrue("alphaは単調増加である必要があります: t=$t", blend.toAlpha >= previousAlpha)
+            previousAlpha = blend.toAlpha
+        }
+
+        val atLast = CameraDirector.resolveKeyframeBlend(keyframes, 1_000L)
+        assertEquals(1, atLast.fromIndex)
+        assertEquals(1, atLast.toIndex)
+        assertEquals(0f, atLast.toAlpha, 1e-6f)
+    }
+
+    @Test
+    fun resolveKeyframeBlend_emptyKeyframes_throws() {
+        assertThrows(IllegalArgumentException::class.java) {
+            CameraDirector.resolveKeyframeBlend(emptyList(), 0L)
+        }
+    }
+
     private fun buildMultiDaySyntheticRoute(): Triple<LongArray, DoubleArray, DoubleArray> {
         // 3日分、1日あたり滞在(密なクラスタ)＋短い移動、という典型的なパターンを模した合成データ。
         val timestamps = mutableListOf<Long>()

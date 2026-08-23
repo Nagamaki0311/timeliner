@@ -4,6 +4,7 @@ import kotlin.math.PI
 import kotlin.math.asin
 import kotlin.math.cos
 import kotlin.math.ln
+import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.math.tan
@@ -26,6 +27,31 @@ object Mercator {
 
     /** 大圏距離（Haversine公式）で使う地球の平均半径（メートル）。 */
     private const val EARTH_MEAN_RADIUS_METERS = 6371000.0
+
+    /**
+     * Webメルカトルの1タイルあたりのピクセル数。MapLibre Native（`mbgl::util::tileSize_D`）と同じ512pxを採用する
+     * （2026-08-22、GitHub一次ソース`include/mbgl/util/constants.hpp`（`android-v13.5.0`タグ）で直接確認、
+     * docs/tasks.md T-025）。[com.nagamaki0311.timeliner.camera.CameraZoom]のズーム計算（T-023、D-029/D-030の
+     * 2回のレビューでは検証されていなかった）と、[metersPerPixelAtZoom]（動画書き出しでのカメラ位置→画面座標
+     * 変換、T-025）の両方でこの定数を共有し、`MapLibreMap.cameraPosition.zoom`（実際に地図が使うズーム基準）と
+     * 一致させる。誤って256px（クラシックなOSMタイル規約、MapLibre Nativeの実際の規約とは1ズームレベル分ずれる）
+     * を使うと、CameraDirectorが計算するズームが実際より1レベル高く（狭く）なり、意図したbboxが
+     * 画面からはみ出す。
+     */
+    const val WEB_MERCATOR_TILE_SIZE_PX = 512.0
+
+    /**
+     * ズームレベル[zoom]における、赤道上(緯度0度)の1ピクセルあたりの投影空間距離をメートルで返す
+     * （実世界の距離ではないことに注意、[distanceMeters]と同じ意味。D-007）。
+     * MapLibre Nativeの`Projection::getMetersPerPixelAtLatitude(0, zoom)`と同じ式
+     * （`2π*地球半径 / (タイルサイズ * 2^zoom)`、緯度0固定は`cos(0)=1`）で、動画書き出し
+     * （docs/decisions.md D-028、docs/tasks.md T-025）で[org.maplibre.android.snapshotter.MapSnapshotter]へ
+     * 渡すカメラのズームから、ルート点列の画面座標（[com.nagamaki0311.timeliner.render.ScreenProjection]）を
+     * 計算する際に使う。緯度0固定は[com.nagamaki0311.timeliner.render.RouteOverlayView]がT-006/D-007で確立した
+     * 「投影空間で一定スケールを使う」という設計を踏襲したもの。
+     */
+    fun metersPerPixelAtZoom(zoom: Double): Double =
+        (2.0 * PI * EARTH_RADIUS_METERS) / (WEB_MERCATOR_TILE_SIZE_PX * 2.0.pow(zoom))
 
     /** 緯度をWebメルカトルのY座標（メートル）へ変換する。 */
     fun latitudeToY(latitude: Double): Double {

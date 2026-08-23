@@ -9,20 +9,21 @@ class CameraZoomTest {
     @Test
     fun zoomToFitBounds_worldSpanningLongitudeAtTileSizeViewport_zoomIsZero() {
         // 経度全体(360度)、緯度は0付近に潰した(fraction=0、latZoom=MAX_ZOOMにフォールバック)ため、
-        // 経度側のみが効く。viewport=256px（タイル1枚分）なら定義上ズーム0になる。
+        // 経度側のみが効く。viewport=512px（タイル1枚分、MapLibre Nativeのタイルサイズ、
+        // docs/decisions.md Mercator.WEB_MERCATOR_TILE_SIZE_PX参照）なら定義上ズーム0になる。
         val bounds = GeoBounds.Bounds(minLatitude = 0.0, maxLatitude = 0.0, minLongitude = -180.0, maxLongitude = 180.0)
 
-        val zoom = CameraZoom.zoomToFitBounds(bounds, viewportWidthPx = 256, viewportHeightPx = 256)
+        val zoom = CameraZoom.zoomToFitBounds(bounds, viewportWidthPx = 512, viewportHeightPx = 512)
 
         assertEquals(0.0, zoom, 1e-9)
     }
 
     @Test
     fun zoomToFitBounds_halfWorldLongitude_zoomIsOne() {
-        // 経度180度分(全体の半分)。viewport=256pxなら定義上ズーム1になる（1タイルが半分の経度をカバー）。
+        // 経度180度分(全体の半分)。viewport=512pxなら定義上ズーム1になる（1タイルが半分の経度をカバー）。
         val bounds = GeoBounds.Bounds(minLatitude = 0.0, maxLatitude = 0.0, minLongitude = -90.0, maxLongitude = 90.0)
 
-        val zoom = CameraZoom.zoomToFitBounds(bounds, viewportWidthPx = 256, viewportHeightPx = 256)
+        val zoom = CameraZoom.zoomToFitBounds(bounds, viewportWidthPx = 512, viewportHeightPx = 512)
 
         assertEquals(1.0, zoom, 1e-9)
     }
