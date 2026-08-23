@@ -95,6 +95,9 @@
 - `TimelineJsonParser.parseArrayElementSafely`の要素単位2度読み（JsonElement構築→toString→再パース）のCPU/GCchurn削減（T-016調査、要素単位の一時オブジェクトで持続的なメモリ増加の主因ではないと判断し見送り。D-004決定3の設計を維持）
 - `TrackCleaner`のパイプライン段数削減（normalize/removeSpeedSpikes/suppressStationaryJitterの統合）によるさらなるコピー削減（T-016調査、実機・実データでの検証ができない環境下でのリスクが実質的な効果を正当化できないため見送り）
 - `TimelineRepository.DayGroup`をコピー無しの参照（オフセット+長さ）方式へ全面書き換える案、`prepareImport`/`commitImport`の2フェーズ設計自体をストリーミング書き込みへ変更する案（T-016調査、いずれも大規模な設計変更のため見送り。前者は`PointBlobCodec`等の全呼び出し元への波及、後者は上書き確認ダイアログ（D-006）の前提と衝突する）
+- `VideoExporter.computeOutputResolution`が`MapLibreMap.width/height`を直接読むため、MapViewのレイアウト未完了時（幅・高さ0）に内部向けの`IllegalArgumentException`文言がそのままUIのエラー表示に出る件（T-025レビューLow/PLAUSIBLE、クラッシュはしないが実機での再現頻度未検証のため見送り）
+- `VideoExporter.captureKeyframeSnapshots`の`catch (e: Throwable)`がタイムアウト/ErrorHandler経由の失敗以外（`onProgress`コールバック起因等）でも無条件に`snapshotter.cancel()`を呼ぶ件（T-025レビューNit、SDK側は安全に振る舞うと推測され実害なしのため見送り）
+- `RouteBitmapOverlay.getBitmap`の`workingBitmap.eraseColor(TRANSPARENT)`が、直後に`drawBackground`が全面を不透明で塗りつぶすため実質無意味な処理になっている件（T-025レビューNit、動作に影響なし、旧設計の残存コードのため見送り）
 
 ## メモ
 

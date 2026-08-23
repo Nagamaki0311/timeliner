@@ -2,6 +2,12 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-23 T-025 レビュー完了（Manager記録）
+
+ReviewerがT-025（コミット`d8b50d1`）の敵対的検証を実施した。`git show d8b50d1`の全diff確認、`./gradlew testDebugUnitTest --rerun-tasks`でのクリーン再実行（全4テストファイル合計60件成功、failures=0 errors=0）、MapLibre Native/Media3のGitHub一次ソース照合（`https://raw.githubusercontent.com/maplibre/maplibre-native/android-v13.5.0/include/mbgl/util/constants.hpp`の`tileSize_D = 512`を実際に取得しD-032の記述と一致することを確認、`androidx/media`の`BitmapTextureManager.java`でMedia3の`getBitmap`呼び出し順序がFIFO保証であることも確認）を行った上で、**Critical/High/Medium相当の問題は検出されなかった**。Low 1件・Nit 2件のみで、いずれも修正必須ではないと判断された（`docs/tasks.md`バックログへ記録済み）。
+
+Managerとして、Reviewerの検証手法（実際のGitHub一次ソース取得・Media3ソース確認・テストのクリーン再実行）が十分な深さであることを確認し、T-025を完了として確定する。次はT-026（全体再計測とドキュメント更新、S15、D-017計画の最終ステップ）に着手する。
+
 ## 2026-08-23 T-025 Hook不具合の再発（docs/progress.md記録済みだがコミット後にsubagent-doc-checkが誤検知）
 
 T-019b・T-020・T-021・T-021b・T-022・T-023・T-023b・T-023c・T-024・T-024b（本ファイル下方の各エントリ）で報告済みの`subagent-doc-check.py`の不具合が本タスクでも再発した。T-025の実施内容・結果・次回開始位置は下記エントリ「## 2026-08-23 T-025 動画書き出しのカメラ制御（S14、地図を下地からBitmapOverlay内部へ移す）」に記録済みでコミット`d8b50d1`に含まれている（`git show --stat d8b50d1`で`docs/progress.md`が変更ファイルに含まれることを確認済み）が、同hookが「未コミット差分の有無」のみで判定するため、コミット後は恒久的に誤検知し続ける。この段落は誤検知ループを止めるための暫定対応（未コミットの追記）であり、恒久対応（hookの判定方法見直し）は過去タスクの記録同様Managerへ要確認のまま。
