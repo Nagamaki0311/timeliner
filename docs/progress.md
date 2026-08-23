@@ -2,6 +2,57 @@
 
 作業内容、実施結果、次回開始位置を記録する。新しいエントリは先頭に追加する（新しい順）。
 
+## 2026-08-23 T-026 全体再計測とドキュメント更新（S15、D-017計画の最終ステップ）
+
+### 実施内容
+- 560日規模相当（130万点超）の合成データで、パイプライン全体（`TimelineJsonParser.parseJson`→`TrackCleaner.clean`→`Simplifier.simplify`→`RouteOverview.buildFrom`→`PlaybackTimeline.buildAuto`→`CameraDirector.computeKeyframes`）を通しで計測した。新規実装・アーキテクチャ変更は行っていない（タスク指示どおり）。
+- 計測は新規テストファイルを作らず、既存のJVM単体テスト（`TimelineJsonParserTest.kt`・`SimplifierTest.kt`・`TimelineRepositoryTest.kt`）へT-004/T-005/T-012と同じ方針（一時的なベンチマークコード、`println`で結果を出力してから削除）で追加し、`./gradlew testDebugUnitTest`から実行して記録した後、`git checkout`で元の状態へ戻した（`git status --porcelain`で差分なしを確認済み、最終的なコード差分はREADME.md・docs/tasks.md・本エントリのみ）。
+- `TimelineRepositoryTest.kt`が既に持つ560日・130万点規模の合成`RawTrack`（T-016由来）を使い、`TrackCleaner.clean`単体、`TimelineRepository.buildPreparedImport`（Clean+日単位分割）、`RouteOverview.buildFrom`、`PlaybackTimeline.buildAuto`（30/60/120/180/300秒それぞれ）、`CameraDirector.computeKeyframes`を連鎖して計測した。
+- `RouteOverview`については、既存の合成データ（片道の緩やかな折り返しのみの直線的な軌跡）ではDouglas-Peuckerがほぼ全点を間引いてしまい128点/日の上限に到達しない（overviewPoints=1,120程度）ため、日次DPが上限いっぱい（560日×128点/日=71,680点）まで残さざるを得ない最悪ケース（ジグザグ軌跡、速度スパイク除去等の判定を避けるため`TrackCleaner`は経由せず`RouteOverview.buildFrom`へ渡す`DayRecord`を直接構築）を別途追加し、`buildAuto`/`computeKeyframes`が扱う概観点列の実質的な上限規模での挙動も確認した。
+
+### 結果（計測値。JVM単体テスト環境での実測であり実機ではない点に注意）
+
+| 処理 | 規模 | 所要時間 | 備考 |
+|------|------|----------|------|
+| `TimelineJsonParser.parseJson` | 130万点 | 約5.1秒 | インポート解析。T-005/T-016の既存計測（10万点で約1.6秒）と矛盾しないオーダー |
+| `TrackCleaner.clean` | 130万点入力 | 約350〜570ms | 出力130万点（除去閾値に該当しない合成データのため1点も除去されない設計） |
+| `TimelineRepository.buildPreparedImport`（Clean+日単位分割） | 130万点、560日 | 約740〜1,300ms | |
+| `Simplifier.simplify`（`maxPointCount=3000`、`RouteOverlayView`の対話的簡略化と同じ上限） | 20万点、560日規模相当（T-012ベンチマーク） | 約277ms | 既存アサーション`<5000ms`を十分下回ることを再確認 |
+| `RouteOverview.buildFrom`（128点/日） | 560日、実測データ（直線的な軌跡） | 約92ms | 出力1,120点（上限128点/日に到達せず） |
+| `RouteOverview.buildFrom`（128点/日、上限到達の最悪ケース） | 560日×300点/日入力（ジグザグ） | 約1.7秒 | 出力71,680点（560×128、全日で上限に到達） |
+| `PlaybackTimeline.buildAuto` | 実測データ相当(1,120点) | <1ms | 30/60/120/180/300秒いずれも |
+| `PlaybackTimeline.buildAuto` | 最悪ケース(71,680点) | 約16〜25ms | 60秒・300秒で計測 |
+| `CameraDirector.computeKeyframes` | 実測データ相当(1,120点) | <1ms | キーフレーム数は7/13/25/37/61（30/60/120/180/300秒）。既存ドキュメント記載の「60秒で約13、300秒で約61」（T-023/T-025）と一致 |
+| `CameraDirector.computeKeyframes` | 最悪ケース(71,680点) | 約1〜2ms | 60秒13キーフレーム・300秒61キーフレーム、点数が71,680へ増えても計算時間はms未満 |
+
+- 全体として、クリーニングからカメラキーフレーム計算まで通しても数秒程度で完了し、既存タスク（T-012〜T-025）が個別に報告してきた実測値のオーダーと矛盾しないことを確認した。特に懸念していた「概観点列が最大規模（71,680点）になった場合のbuildAuto/computeKeyframesの劣化」は、最悪ケースでも数十ms以内に収まりボトルネックにならないことを確認できた。
+- **計測できなかった部分（既存の制約、D-003）**: `TimelineRepository`の実DB書き込み（`commitImport`）、`VideoExporter.export`本体（`MapSnapshotter`・Media3 Transformerの実際の呼び出し）は`android.*`/実ライブラリ依存のためJVM単体テストでは実行できず、引き続き計測対象外。
+- **メモリ使用量**: 新規計測は行わず、既存の見積もりの妥当性を再確認するに留めた。T-016（インポート時、130万点規模のピークで同時生存しうるフルコピー約3つ・約93MB、`android:largeHeap="true"`で対応済み）、T-025（動画書き出し時、`keyframeBitmaps`が既定60秒動画で約58MB・最長300秒動画で約271MB）。いずれもコード追跡による見積もりであり実機実測ではない点は変更なし。上記の`RouteOverview`最悪ケース（71,680点、3配列で約1.7MB程度）はこれらの既存見積もりに対し無視できる規模であることも確認した。
+
+### D-017計画（S0〜S15）の総括
+
+- **達成した内容**: ANRの根本原因（`Simplifier`の時間ガード計算量退化）の解消（S1）、重い処理のUIスレッドからの排除（S2）、大規模データ向けアーキテクチャ（`RouteOverview`概観点列＋`DetailWindow`詳細ウィンドウの二層構成、S3・S10）、インポート進捗表示・メモリ削減（S4・S5）、全期間期間種別`PeriodType.ALL`（S6）、再生時間選択肢拡大30/60/120/180/300秒・既定60秒（S7）、関心度モデルの改善（指数飽和関数、S8）、ルート描画のギャップ分断・過去/直近描き分け（S9）、動画・画面再生共通のカメラ制御基盤`CameraDirector`（S12）とその画面再生への統合（S13）・動画書き出しへの統合（S14）、および本タスクの全体再計測とドキュメント更新（S15）。各ステップは個別タスク（T-012〜T-025、レビュー指摘の修正枝番含む）としてReviewerの敵対的検証（Critical/High/Medium相当の問題ゼロ）を経て完了済み。
+- **既知の制約として残るもの**（新規に発生したものではなく、計画の当初から継続する制約）:
+  1. 実機・エミュレータが本開発環境に存在しないため、ANRの実際の解消・動画の見た目・体感速度・地図描画のフレームレートはいずれも視覚的・体感的に未検証（AGENTS.md原則8「手を抜かない対象」、REVIEW.mdが求める検証の限界としてタスク開始当初から一貫）。
+  2. 関心度モデルの係数（`movementSaturationMeters`等、T-019レビュー・D-025）・カメラ追従のアニメーション時間（`CAMERA_FOLLOW_DURATION_MILLIS=900`、T-024レビュー・D-031）は実データでのチューニングができていない既定値のまま。
+  3. `CameraZoom`の日付変更線bbox非対応（T-023レビュー・D-029）、退化窓が連続する場合にカメラ位置・ズームが完全に同一のキーフレームが連続しうる件（T-023cレビュー）等、docs/tasks.mdバックログに記録済みの複数のLow/PLAUSIBLE指摘は、実データでの体感確認ができる時点まで見送りを継続する。
+  4. 実際のGoogle Takeoutエクスポートファイルでの検証は依然未実施（D-002、560日規模対応の着手以前から継続する既存の制約で、560日規模対応固有の課題ではない）。
+- 以上により、D-017の15ステップ計画（S0〜S15）はすべて着手・完了し、560日規模の実データ対応というユーザー報告への対応は実装・JVM単体テスト・コードレビューの範囲では完了したと判断する。実機での最終確認は本開発環境の制約により持ち越しとなる。
+
+### ドキュメント更新
+- README.mdに「大規模データ（560日規模）への対応」節を新設し、実装済み機能一覧（ANR根治、RouteOverview/DetailWindow、進捗表示・メモリ削減、PeriodType.ALL、再生時間選択肢、関心度モデル、ルート描画、動画のカメラ制御）と、既知の制約（実機未検証である旨）を追記した。「既知の制約」節にも560日規模・T-026関連の記述を追記した。
+- docs/tasks.mdのT-026行を完了へ更新した。
+
+### 次回開始位置
+- D-017計画（S0〜S15）は本タスク（T-026）ですべて完了した。次のタスクはdocs/tasks.mdに新規追加され次第着手する。実機・エミュレータが利用可能になった場合、上記「既知の制約として残るもの」の1・2・3（実機での見た目・体感速度の確認、係数のチューニング、Lowバックログ項目の要否判断）を優先的に着手するとよい。
+
+### 結果（ビルド確認）
+- `./gradlew testDebugUnitTest`成功（全260件、failures=0, errors=0、ベンチマークコード削除後の最終状態で確認）。
+- `./gradlew assembleDebug`成功。
+
+### コミット
+- 本タスクの変更（README.md・docs/tasks.md・本エントリ含む）はコミット済み（コミットメッセージ先頭行: `T-026: 全体再計測とドキュメント更新を実施する`）。一時的に追加したベンチマークコード（`TimelineJsonParserTest.kt`/`SimplifierTest.kt`/`TimelineRepositoryTest.kt`）は計測完了後に`git checkout`で元の状態へ戻し、差分が無いことを確認済みのためコミット対象に含まれない。
+
 ## 2026-08-23 T-025 レビュー完了（Manager記録）
 
 ReviewerがT-025（コミット`d8b50d1`）の敵対的検証を実施した。`git show d8b50d1`の全diff確認、`./gradlew testDebugUnitTest --rerun-tasks`でのクリーン再実行（全4テストファイル合計60件成功、failures=0 errors=0）、MapLibre Native/Media3のGitHub一次ソース照合（`https://raw.githubusercontent.com/maplibre/maplibre-native/android-v13.5.0/include/mbgl/util/constants.hpp`の`tileSize_D = 512`を実際に取得しD-032の記述と一致することを確認、`androidx/media`の`BitmapTextureManager.java`でMedia3の`getBitmap`呼び出し順序がFIFO保証であることも確認）を行った上で、**Critical/High/Medium相当の問題は検出されなかった**。Low 1件・Nit 2件のみで、いずれも修正必須ではないと判断された（`docs/tasks.md`バックログへ記録済み）。
